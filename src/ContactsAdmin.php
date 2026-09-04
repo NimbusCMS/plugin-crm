@@ -14,15 +14,21 @@ namespace NimbusCMS\Crm;
 final class ContactsAdmin
 {
     private const NOTICES = [
-        'saved'    => ['ok', 'Contact saved.'],
-        'deleted'  => ['ok', 'Contact deleted.'],
-        'bademail' => ['err', 'That email address is not valid.'],
-        'noname'   => ['err', 'A contact needs a first or last name.'],
-        'invalid'  => ['err', 'Check the details and try again.'],
+        'saved'       => ['ok', 'Contact saved.'],
+        'deleted'     => ['ok', 'Contact deleted.'],
+        'activity'    => ['ok', 'Activity logged.'],
+        'activitygone' => ['ok', 'Activity deleted.'],
+        'bademail'    => ['err', 'That email address is not valid.'],
+        'noname'      => ['err', 'A contact needs a first or last name.'],
+        'activitybad' => ['err', 'Could not log that activity — check the details.'],
+        'invalid'     => ['err', 'Check the details and try again.'],
     ];
 
-    public function __construct(private Contacts $contacts, private Organizations $organizations)
-    {
+    public function __construct(
+        private Contacts $contacts,
+        private Organizations $organizations,
+        private Activities $activities,
+    ) {
     }
 
     /**
@@ -45,6 +51,9 @@ final class ContactsAdmin
             . '<p class="nb-muted cr-intro">The people your business keeps track of. This is private data — only roles with the <code>crm</code> capability can see it.</p>';
 
         $html .= $this->form($csrf, $editContact);
+        if ($editContact !== null) {
+            $html .= ActivitiesAdmin::render($csrf, 'crm', Activities::SUBJECT_CONTACT, (int) $editContact['id'], $this->activities->forSubject(Activities::SUBJECT_CONTACT, (int) $editContact['id']), $nonce);
+        }
         $html .= $this->list($csrf, $contacts, $q, $editId);
 
         return $html;

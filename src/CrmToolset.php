@@ -25,8 +25,11 @@ use Nimbus\Mcp\PluginToolset;
  */
 final class CrmToolset extends PluginToolset
 {
-    public function __construct(private Contacts $contacts, private Organizations $organizations)
-    {
+    public function __construct(
+        private Contacts $contacts,
+        private Organizations $organizations,
+        private Activities $activities,
+    ) {
     }
 
     public function namespace(): string
@@ -96,6 +99,33 @@ final class CrmToolset extends PluginToolset
                 'required'   => ['id'],
                 'properties' => ['id' => $orgId],
             ], $this->organizationDelete(...)),
+
+            new PluginTool('activities', 'read', 'The activity timeline for one subject (a contact or an organization), most recent first.', [
+                'type'       => 'object',
+                'required'   => ['subject_type', 'subject_id'],
+                'properties' => [
+                    'subject_type' => ['type' => 'string', 'enum' => [Activities::SUBJECT_CONTACT, Activities::SUBJECT_ORGANIZATION], 'description' => 'Whose timeline: "contact" or "organization".'],
+                    'subject_id'   => ['type' => 'integer', 'description' => 'The contact or organization id.'],
+                ],
+            ], $this->activities(...)),
+
+            new PluginTool('activity_add', 'write', 'Log an activity (a note/call/email/meeting) against a contact or organization. Recorded under your token name.', [
+                'type'       => 'object',
+                'required'   => ['subject_type', 'subject_id'],
+                'properties' => [
+                    'subject_type' => ['type' => 'string', 'enum' => [Activities::SUBJECT_CONTACT, Activities::SUBJECT_ORGANIZATION], 'description' => 'What to attach it to: "contact" or "organization".'],
+                    'subject_id'   => ['type' => 'integer', 'description' => 'The existing contact or organization id.'],
+                    'kind'         => ['type' => 'string', 'enum' => Activities::KINDS, 'description' => 'The kind of activity. Defaults to "note".'],
+                    'body'         => ['type' => 'string', 'description' => 'What happened (plain text). Optional.'],
+                    'occurred_at'  => ['type' => 'string', 'description' => 'When it happened, "YYYY-MM-DD HH:MM[:SS]". Defaults to now.'],
+                ],
+            ], $this->activityAdd(...)),
+
+            new PluginTool('activity_delete', 'write', 'Delete one activity outright by id.', [
+                'type'       => 'object',
+                'required'   => ['id'],
+                'properties' => ['id' => ['type' => 'integer', 'description' => 'The activity id.']],
+            ], $this->activityDelete(...)),
         ];
     }
 
@@ -184,6 +214,41 @@ final class CrmToolset extends PluginToolset
     {
         $id = $this->requireInt($a, 'id');
         return ['ok' => true, 'deleted' => $this->organizations->delete($id)];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function activities(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $type = (string) ($a['subject_type'] ?? '');
+        $id   = $this->requireInt($a, 'subject_id');
+        $list = $this->activities->forSubject($type, $id);
+        return ['activities' => $list, 'count' => count($list)];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function activityAdd(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        return $this->guard(function () use ($a, $p): array {
+            // author is the token's own name — server-set, never read from args.
+            $id = $this->activities->add($a, $this->now(), $p->name);
+            return ['ok' => true, 'activity' => $this->activities->get($id)];
+        });
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function activityDelete(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $id = $this->requireInt($a, 'id');
+        return ['ok' => true, 'deleted' => $this->activities->delete($id) > 0];
     }
 
     // --- helpers ---------------------------------------------------------

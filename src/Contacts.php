@@ -122,10 +122,21 @@ final class Contacts
         return array_map($this->hydrate(...), $rows);
     }
 
-    /** Delete a contact outright by id; returns the number of rows removed (0 if none). */
+    /**
+     * Delete a contact outright, together with its activity timeline — the GDPR
+     * "forget" primitive, so nothing about the person is left behind. Atomic:
+     * the activities and the contact go in one transaction. Returns the number of
+     * contact rows removed (0 if none).
+     */
     public function delete(int $id): int
     {
-        return $this->storage()->execute('DELETE FROM ' . Schema::CONTACT . ' WHERE id = :id', ['id' => $id]);
+        return (int) $this->storage()->transaction(function () use ($id): int {
+            $this->storage()->execute(
+                'DELETE FROM ' . Schema::ACTIVITY . ' WHERE subject_type = :type AND subject_id = :id',
+                ['type' => Activities::SUBJECT_CONTACT, 'id' => $id],
+            );
+            return $this->storage()->execute('DELETE FROM ' . Schema::CONTACT . ' WHERE id = :id', ['id' => $id]);
+        });
     }
 
     // --- validation / hydration -----------------------------------------

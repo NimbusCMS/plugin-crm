@@ -13,14 +13,19 @@ namespace NimbusCMS\Crm;
 final class OrganizationsAdmin
 {
     private const NOTICES = [
-        'saved'   => ['ok', 'Organization saved.'],
-        'deleted' => ['ok', 'Organization deleted — its contacts were kept and unlinked.'],
-        'noname'  => ['err', 'An organization needs a name.'],
-        'invalid' => ['err', 'Check the details and try again.'],
+        'saved'        => ['ok', 'Organization saved.'],
+        'deleted'      => ['ok', 'Organization deleted — its contacts were kept and unlinked.'],
+        'activity'     => ['ok', 'Activity logged.'],
+        'activitygone' => ['ok', 'Activity deleted.'],
+        'noname'       => ['err', 'An organization needs a name.'],
+        'activitybad'  => ['err', 'Could not log that activity — check the details.'],
+        'invalid'      => ['err', 'Check the details and try again.'],
     ];
 
-    public function __construct(private Organizations $organizations)
-    {
+    public function __construct(
+        private Organizations $organizations,
+        private Activities $activities,
+    ) {
     }
 
     /**
@@ -42,6 +47,7 @@ final class OrganizationsAdmin
             . $this->notice($notice)
             . '<p class="nb-muted cr-intro">The companies your contacts belong to. Deleting one keeps its people — they are simply unlinked.</p>'
             . $this->form($csrf, $editOrg)
+            . ($editOrg !== null ? ActivitiesAdmin::render($csrf, 'crm-organizations', Activities::SUBJECT_ORGANIZATION, (int) $editOrg['id'], $this->activities->forSubject(Activities::SUBJECT_ORGANIZATION, (int) $editOrg['id']), $nonce) : '')
             . $this->list($csrf, $orgs, $q);
     }
 
