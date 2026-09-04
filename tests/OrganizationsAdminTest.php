@@ -6,6 +6,7 @@ namespace NimbusCMS\Crm\Tests;
 
 use Nimbus\Database\Connection;
 use Nimbus\Plugin\PluginStorage;
+use NimbusCMS\Crm\Activities;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\OrganizationsAdmin;
 use NimbusCMS\Crm\Schema;
@@ -20,6 +21,7 @@ use PHPUnit\Framework\TestCase;
 final class OrganizationsAdminTest extends TestCase
 {
     private Organizations $organizations;
+    private Activities $activities;
     private OrganizationsAdmin $admin;
 
     protected function setUp(): void
@@ -31,14 +33,16 @@ final class OrganizationsAdminTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach (Schema::organizations() as $sql) {
+        foreach ([...Schema::organizations(), ...Schema::activities()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
+        $db->execute('TRUNCATE ' . Schema::ACTIVITY);
 
         $storage             = new PluginStorage($db);
         $this->organizations = new Organizations(static fn (): PluginStorage => $storage);
-        $this->admin         = new OrganizationsAdmin($this->organizations);
+        $this->activities    = new Activities(static fn (): PluginStorage => $storage);
+        $this->admin         = new OrganizationsAdmin($this->organizations, $this->activities);
     }
 
     public function test_the_list_escapes_hostile_author_values(): void

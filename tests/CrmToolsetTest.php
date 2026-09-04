@@ -10,6 +10,7 @@ use Nimbus\Auth\Authorizer;
 use Nimbus\Database\Connection;
 use Nimbus\Mcp\McpError;
 use Nimbus\Plugin\PluginStorage;
+use NimbusCMS\Crm\Activities;
 use NimbusCMS\Crm\Contacts;
 use NimbusCMS\Crm\CrmToolset;
 use NimbusCMS\Crm\Organizations;
@@ -37,16 +38,18 @@ final class CrmToolsetTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
+        $db->execute('TRUNCATE ' . Schema::ACTIVITY);
 
         $storage       = new PluginStorage($db);
         $this->toolset = new CrmToolset(
             new Contacts(static fn (): PluginStorage => $storage),
             new Organizations(static fn (): PluginStorage => $storage),
+            new Activities(static fn (): PluginStorage => $storage),
         );
         $this->toolset->bindTo('nimbuscms.crm'); // the registrar does this in prod
         $this->ctx = new EntryOpContext('127.0.0.1', '/api/v1/mcp');
@@ -72,13 +75,14 @@ final class CrmToolsetTest extends TestCase
         self::assertSame([
             'crm_contacts', 'crm_contact_get', 'crm_contact_set', 'crm_contact_delete',
             'crm_organizations', 'crm_organization_get', 'crm_organization_set', 'crm_organization_delete',
+            'crm_activities', 'crm_activity_add', 'crm_activity_delete',
         ], $names);
     }
 
     public function test_a_read_only_token_sees_only_the_read_tools(): void
     {
         $names = array_column($this->toolset->definitions($this->principal('nimbuscms.crm:read')), 'name');
-        self::assertSame(['crm_contacts', 'crm_contact_get', 'crm_organizations', 'crm_organization_get'], $names);
+        self::assertSame(['crm_contacts', 'crm_contact_get', 'crm_organizations', 'crm_organization_get', 'crm_activities'], $names);
     }
 
     public function test_a_content_token_cannot_reach_contacts(): void
@@ -164,6 +168,54 @@ final class CrmToolsetTest extends TestCase
     public function test_creating_an_org_without_a_name_comes_back_as_data(): void
     {
         $out = $this->toolset->call('crm_organization_set', [], $this->principal('nimbuscms.crm:write'), $this->ctx);
+        self::assertFalse($out['ok']);
+        self::assertSame('invalid', $out['error']);
+    }
+
+    public function test_a_content_token_cannot_reach_activities_either(): void
+    {
+        $this->expectException(McpError::class);
+        $this->expectExceptionMessage('Unknown tool "crm_activity_add"');
+        $this->toolset->call('crm_activity_add', [], $this->principal('*:read', '*:write'), $this->ctx);
+    }
+
+    public function test_an_activity_is_logged_under_the_token_name_and_listed(): void
+    {
+        $write = $this->principal('nimbuscms.crm:read', 'nimbuscms.crm:write');
+        $c     = $this->toolset->call('crm_contact_set', ['first_name' => 'Ada'], $write, $this->ctx);
+        $cid   = $c['contact']['id'];
+
+        $out = $this->toolset->call('crm_activity_add', [
+            'subject_type' => 'contact', 'subject_id' => $cid, 'kind' => 'call', 'body' => 'Discussed the engine.',
+        ], $write, $this->ctx);
+        self::assertTrue($out['ok']);
+        self::assertSame('crm-bot', $out['activity']['author'], 'the author is the token name, not a client field');
+
+        $list = $this->toolset->call('crm_activities', ['subject_type' => 'contact', 'subject_id' => $cid], $write, $this->ctx);
+        self::assertSame(1, $list['count']);
+        self::assertSame('Discussed the engine.', $list['activities'][0]['body']);
+
+        $del = $this->toolset->call('crm_activity_delete', ['id' => $out['activity']['id']], $write, $this->ctx);
+        self::assertTrue($del['deleted']);
+    }
+
+    public function test_author_cannot_be_over_posted_on_an_activity(): void
+    {
+        $write = $this->principal('nimbuscms.crm:read', 'nimbuscms.crm:write');
+        $c     = $this->toolset->call('crm_contact_set', ['first_name' => 'Ada'], $write, $this->ctx);
+
+        $out = $this->toolset->call('crm_activity_add', [
+            'subject_type' => 'contact', 'subject_id' => $c['contact']['id'], 'body' => 'x', 'author' => 'spoofed-name',
+        ], $write, $this->ctx);
+        self::assertTrue($out['ok']);
+        self::assertSame('crm-bot', $out['activity']['author'], 'a client-supplied author is ignored');
+    }
+
+    public function test_logging_against_a_missing_subject_comes_back_as_data(): void
+    {
+        $out = $this->toolset->call('crm_activity_add', [
+            'subject_type' => 'contact', 'subject_id' => 999999, 'body' => 'ghost',
+        ], $this->principal('nimbuscms.crm:write'), $this->ctx);
         self::assertFalse($out['ok']);
         self::assertSame('invalid', $out['error']);
     }

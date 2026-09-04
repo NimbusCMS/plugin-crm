@@ -6,6 +6,7 @@ namespace NimbusCMS\Crm\Tests;
 
 use Nimbus\Database\Connection;
 use Nimbus\Plugin\PluginStorage;
+use NimbusCMS\Crm\Activities;
 use NimbusCMS\Crm\Contacts;
 use NimbusCMS\Crm\ContactsAdmin;
 use NimbusCMS\Crm\Organizations;
@@ -21,6 +22,7 @@ use PHPUnit\Framework\TestCase;
 final class ContactsAdminTest extends TestCase
 {
     private Contacts $contacts;
+    private Activities $activities;
     private ContactsAdmin $admin;
 
     protected function setUp(): void
@@ -32,15 +34,21 @@ final class ContactsAdminTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
+        $db->execute('TRUNCATE ' . Schema::ACTIVITY);
 
-        $storage        = new PluginStorage($db);
-        $this->contacts = new Contacts(static fn (): PluginStorage => $storage);
-        $this->admin    = new ContactsAdmin($this->contacts, new Organizations(static fn (): PluginStorage => $storage));
+        $storage          = new PluginStorage($db);
+        $this->contacts   = new Contacts(static fn (): PluginStorage => $storage);
+        $this->activities = new Activities(static fn (): PluginStorage => $storage);
+        $this->admin      = new ContactsAdmin(
+            $this->contacts,
+            new Organizations(static fn (): PluginStorage => $storage),
+            $this->activities,
+        );
     }
 
     public function test_the_list_escapes_hostile_author_values(): void
@@ -72,5 +80,20 @@ final class ContactsAdminTest extends TestCase
         self::assertStringNotContainsString('<b>note</b>', $html, 'the loaded notes are escaped in the textarea');
         self::assertStringContainsString('&lt;b&gt;note&lt;/b&gt; &amp; things', $html);
         self::assertStringContainsString('Edit contact', $html);
+    }
+
+    public function test_the_timeline_shows_only_when_editing_and_escapes_activity_bodies(): void
+    {
+        $id = $this->contacts->save(null, ['first_name' => 'Ada'], '2026-01-01 09:00:00');
+
+        // No timeline block on the plain list view.
+        self::assertStringNotContainsString('Log activity', $this->admin->render('CSRF123', null, null, null, 'n'));
+
+        $this->activities->add(['subject_type' => 'contact', 'subject_id' => (string) $id, 'body' => '<script>alert(1)</script>'], '2026-01-01 09:00:00');
+        $html = $this->admin->render('CSRF123', null, (string) $id, null, 'n');
+
+        self::assertStringContainsString('Log activity', $html, 'the add-activity form shows on the edit page');
+        self::assertStringNotContainsString('<script>alert(1)</script>', $html, 'a hostile activity body is escaped');
+        self::assertStringContainsString('&lt;script&gt;', $html);
     }
 }

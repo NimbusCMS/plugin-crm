@@ -18,7 +18,8 @@ use Nimbus\Plugin\PluginStorage;
  * token can never reach contact data. All on its **own tables** (ADR 0005),
  * touching no core data; no public/site surface at all.
  *
- * Slice 1: contacts. Slice 2: organizations + the contact→org link.
+ * Slice 1: contacts. Slice 2: organizations + the contact→org link. Slice 3: the
+ * activity timeline against a contact or an organization.
  */
 final class CrmPlugin implements Plugin
 {
@@ -29,6 +30,7 @@ final class CrmPlugin implements Plugin
     {
         $context->migrations()->register('001_contacts', Schema::contacts());
         $context->migrations()->register('002_organizations', Schema::organizations());
+        $context->migrations()->register('003_activities', Schema::activities());
 
         // Grantable, wildcard-immune: nimbuscms.crm:read / :write. Contact data is
         // PII — a content *:write token can never read or change it.
@@ -38,9 +40,10 @@ final class CrmPlugin implements Plugin
         $storage       = static fn (): PluginStorage => $context->storage();
         $contacts      = new Contacts($storage);
         $organizations = new Organizations($storage);
+        $activities    = new Activities($storage);
 
         // The agent surface — every tool gates on nimbuscms.crm:read|write (ADR 0016).
-        $context->mcp()->register(new CrmToolset($contacts, $organizations));
+        $context->mcp()->register(new CrmToolset($contacts, $organizations, $activities));
 
         // Admin: search + list + create/edit form. Gated on nimbuscms.crm:write
         // (same as the write tools) so a content-only editor can't reach PII; the
@@ -49,7 +52,7 @@ final class CrmPlugin implements Plugin
             'crm',
             'Contacts',
             '👥',
-            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new ContactsAdmin($contacts, $organizations))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
+            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new ContactsAdmin($contacts, $organizations, $activities))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
             self::ID . ':write',
         );
 
@@ -91,7 +94,7 @@ final class CrmPlugin implements Plugin
             'crm-organizations',
             'Organizations',
             '🏢',
-            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new OrganizationsAdmin($organizations))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
+            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new OrganizationsAdmin($organizations, $activities))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
             self::ID . ':write',
         );
 
@@ -121,6 +124,48 @@ final class CrmPlugin implements Plugin
             }
             return Response::redirect('/admin/crm-organizations?ok=deleted');
         });
+
+        // Activities are logged inline on a contact or an organization. The same two
+        // actions serve both record pages (each inherits its page's crm:write + CSRF
+        // gate); the subject on the form decides where we redirect back to. The admin
+        // sets no author — there is no spoofable author field (an MCP add records the
+        // token name; see CrmToolset).
+        $back = static function (Request $r): string {
+            $page = ($r->input('subject_type') === Activities::SUBJECT_ORGANIZATION) ? 'crm-organizations' : 'crm';
+            $sid  = trim((string) ($r->input('subject_id') ?? ''));
+            $edit = ($sid !== '' && ctype_digit($sid)) ? '?edit=' . $sid . '&' : '?';
+            return '/admin/' . $page . $edit;
+        };
+
+        $addActivity = static function (Request $r) use ($activities, $back): Response {
+            $base = $back($r);
+            $fields = [
+                'subject_type' => (string) ($r->input('subject_type') ?? ''),
+                'subject_id'   => (string) ($r->input('subject_id') ?? ''),
+                'kind'         => (string) ($r->input('kind') ?? 'note'),
+                'body'         => (string) ($r->input('body') ?? ''),
+                'occurred_at'  => (string) ($r->input('occurred_at') ?? ''),
+            ];
+            try {
+                $activities->add($fields, date('Y-m-d H:i:s'), null);
+                return Response::redirect($base . 'ok=activity');
+            } catch (\Throwable) {
+                return Response::redirect($base . 'err=activitybad');
+            }
+        };
+
+        $deleteActivity = static function (Request $r) use ($activities, $back): Response {
+            $idIn = trim((string) ($r->input('id') ?? ''));
+            if ($idIn !== '' && ctype_digit($idIn)) {
+                $activities->delete((int) $idIn);
+            }
+            return Response::redirect($back($r) . 'ok=activitygone');
+        };
+
+        foreach (['crm', 'crm-organizations'] as $page) {
+            $context->adminPages()->action($page, 'activity-add', $addActivity);
+            $context->adminPages()->action($page, 'activity-delete', $deleteActivity);
+        }
 
         // Teach an MCP agent how to drive the CRM (ADR 0013).
         $context->skills()->register('CRM', Guide::text());
