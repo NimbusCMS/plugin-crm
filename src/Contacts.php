@@ -111,7 +111,7 @@ final class Contacts
         // Escape LIKE wildcards so a `%`/`_` in the term is a literal, and bind it.
         $like = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], mb_substr($q, 0, 100)) . '%';
         $rows = $this->storage()->select(
-            "SELECT id, first_name, last_name, email, phone, notes, created_at, updated_at FROM " . Schema::CONTACT .
+            'SELECT id, first_name, last_name, email, phone, notes, created_at, updated_at FROM ' . Schema::CONTACT .
             " WHERE first_name LIKE :q ESCAPE '\\\\' OR last_name LIKE :q2 ESCAPE '\\\\' OR email LIKE :q3 ESCAPE '\\\\'
               ORDER BY updated_at DESC, id DESC",
             ['q' => $like, 'q2' => $like, 'q3' => $like],
@@ -141,7 +141,7 @@ final class Contacts
         }
         $v = trim((string) $fields[$key]);
         if (mb_strlen($v) > self::MAX_NAME) {
-            throw new \InvalidArgumentException("A name must be " . self::MAX_NAME . ' characters or fewer.');
+            throw new \InvalidArgumentException('A name must be ' . self::MAX_NAME . ' characters or fewer.');
         }
         return $v;
     }
