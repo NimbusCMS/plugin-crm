@@ -8,6 +8,7 @@ use Nimbus\Database\Connection;
 use Nimbus\Plugin\PluginStorage;
 use NimbusCMS\Crm\Activities;
 use NimbusCMS\Crm\Contacts;
+use NimbusCMS\Crm\Deals;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
 use PHPUnit\Framework\TestCase;
@@ -23,6 +24,7 @@ final class ActivitiesTest extends TestCase
     private Activities $activities;
     private Contacts $contacts;
     private Organizations $organizations;
+    private Deals $deals;
 
     protected function setUp(): void
     {
@@ -33,17 +35,19 @@ final class ActivitiesTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
+        $db->execute('TRUNCATE ' . Schema::DEAL);
 
         $storage             = new PluginStorage($db);
         $this->activities    = new Activities(static fn (): PluginStorage => $storage);
         $this->contacts      = new Contacts(static fn (): PluginStorage => $storage);
         $this->organizations = new Organizations(static fn (): PluginStorage => $storage);
+        $this->deals         = new Deals(static fn (): PluginStorage => $storage);
     }
 
     private const NOW = '2026-01-01 09:00:00';
@@ -98,11 +102,12 @@ final class ActivitiesTest extends TestCase
         $this->activities->add(['subject_type' => 'contact', 'subject_id' => (string) $cid, 'kind' => 'carrier-pigeon'], self::NOW);
     }
 
-    public function test_subject_type_is_an_allow_list(): void
+    public function test_an_activity_can_hang_off_a_deal(): void
     {
-        // "deal" is reserved in the column ENUM but not yet a valid write subject.
-        $this->expectException(\InvalidArgumentException::class);
-        $this->activities->add(['subject_type' => 'deal', 'subject_id' => '1', 'body' => 'x'], self::NOW);
+        $dealId = $this->deals->save(null, ['title' => 'Big one'], self::NOW);
+        $id     = $this->activities->add(['subject_type' => 'deal', 'subject_id' => (string) $dealId, 'body' => 'Proposal sent.'], self::NOW);
+        self::assertSame($dealId, $this->activities->get($id)['subject_id']);
+        self::assertCount(1, $this->activities->forSubject('deal', $dealId));
     }
 
     public function test_an_arbitrary_subject_type_is_rejected(): void
@@ -144,6 +149,6 @@ final class ActivitiesTest extends TestCase
 
     public function test_an_unknown_subject_type_yields_an_empty_timeline_not_an_error(): void
     {
-        self::assertSame([], $this->activities->forSubject('deal', 1));
+        self::assertSame([], $this->activities->forSubject('user', 1));
     }
 }

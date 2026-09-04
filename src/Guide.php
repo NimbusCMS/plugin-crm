@@ -17,11 +17,11 @@ final class Guide
         # CRM
 
         A back-office CRM: **contacts** (people), the **organizations** (companies) they
-        belong to, and an **activity timeline** against either; a deal pipeline arrives in
-        a later slice. It is **PII**, so every tool is gated by the `nimbuscms.crm`
-        capability: a read needs `nimbuscms.crm:read`, a write needs `nimbuscms.crm:write`.
-        A content `*:write` token cannot reach it, and a tool you lack the capability for
-        is invisible.
+        belong to, an **activity timeline** against any of them, and a **deal pipeline**.
+        It is **PII**, so every tool is gated by the `nimbuscms.crm` capability: a read
+        needs `nimbuscms.crm:read`, a write needs `nimbuscms.crm:write`. A content
+        `*:write` token cannot reach it, and a tool you lack the capability for is
+        invisible.
 
         ## Contacts
 
@@ -49,8 +49,8 @@ final class Guide
 
         ## Activities
 
-        A timeline of dated, typed entries against a **subject** — a `contact` or an
-        `organization`.
+        A timeline of dated, typed entries against a **subject** — a `contact`, an
+        `organization` or a `deal`.
 
         - `crm_activities` — the timeline for one subject (`subject_type`, `subject_id`),
           most recent first.
@@ -60,9 +60,28 @@ final class Guide
           under your token name.
         - `crm_activity_delete` — remove one activity by `id`.
 
-        Deleting a contact or organization also removes its activities, so a "forget"
-        leaves nothing behind. Values are stored as you send them and escaped when
-        displayed; there is no public page for CRM data.
+        Deleting a contact, organization or deal also removes its activities, so a
+        "forget" leaves nothing behind.
+
+        ## Deals
+
+        The sales pipeline — an opportunity with a `title`, an optional money `value`,
+        the `stage` it sits in and a `status`.
+
+        - `crm_deals` — list the pipeline; filter by `status` (`open`/`won`/`lost`) or
+          search by title (`q`).
+        - `crm_deal_get` — one deal by `id`.
+        - `crm_deal_set` — create (omit `id`) or update (with `id`). Fields: `title`
+          (required to create), `value` (non-negative, ≤ 2 decimals), `currency`
+          (3-letter code, defaults USD), `stage` (`lead`/`qualified`/`proposal`/
+          `negotiation`, defaults `lead`), `status` (`open`/`won`/`lost`, defaults
+          `open`), `contact_id` and `org_id` (existing records to link; blank to unlink).
+          Only the fields you send change.
+        - `crm_deal_delete` — remove a deal by `id`, together with its activities.
+
+        Deleting a contact or organization keeps any deal that referenced it — the link
+        is simply cleared. Values are stored as you send them and escaped when displayed;
+        there is no public page for CRM data.
         MD;
     }
 }

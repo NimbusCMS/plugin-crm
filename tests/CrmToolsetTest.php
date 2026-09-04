@@ -13,6 +13,7 @@ use Nimbus\Plugin\PluginStorage;
 use NimbusCMS\Crm\Activities;
 use NimbusCMS\Crm\Contacts;
 use NimbusCMS\Crm\CrmToolset;
+use NimbusCMS\Crm\Deals;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
 use PHPUnit\Framework\TestCase;
@@ -38,18 +39,20 @@ final class CrmToolsetTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
+        $db->execute('TRUNCATE ' . Schema::DEAL);
 
         $storage       = new PluginStorage($db);
         $this->toolset = new CrmToolset(
             new Contacts(static fn (): PluginStorage => $storage),
             new Organizations(static fn (): PluginStorage => $storage),
             new Activities(static fn (): PluginStorage => $storage),
+            new Deals(static fn (): PluginStorage => $storage),
         );
         $this->toolset->bindTo('nimbuscms.crm'); // the registrar does this in prod
         $this->ctx = new EntryOpContext('127.0.0.1', '/api/v1/mcp');
@@ -76,13 +79,14 @@ final class CrmToolsetTest extends TestCase
             'crm_contacts', 'crm_contact_get', 'crm_contact_set', 'crm_contact_delete',
             'crm_organizations', 'crm_organization_get', 'crm_organization_set', 'crm_organization_delete',
             'crm_activities', 'crm_activity_add', 'crm_activity_delete',
+            'crm_deals', 'crm_deal_get', 'crm_deal_set', 'crm_deal_delete',
         ], $names);
     }
 
     public function test_a_read_only_token_sees_only_the_read_tools(): void
     {
         $names = array_column($this->toolset->definitions($this->principal('nimbuscms.crm:read')), 'name');
-        self::assertSame(['crm_contacts', 'crm_contact_get', 'crm_organizations', 'crm_organization_get', 'crm_activities'], $names);
+        self::assertSame(['crm_contacts', 'crm_contact_get', 'crm_organizations', 'crm_organization_get', 'crm_activities', 'crm_deals', 'crm_deal_get'], $names);
     }
 
     public function test_a_content_token_cannot_reach_contacts(): void
@@ -216,6 +220,66 @@ final class CrmToolsetTest extends TestCase
         $out = $this->toolset->call('crm_activity_add', [
             'subject_type' => 'contact', 'subject_id' => 999999, 'body' => 'ghost',
         ], $this->principal('nimbuscms.crm:write'), $this->ctx);
+        self::assertFalse($out['ok']);
+        self::assertSame('invalid', $out['error']);
+    }
+
+    public function test_a_content_token_cannot_reach_deals_either(): void
+    {
+        $this->expectException(McpError::class);
+        $this->expectExceptionMessage('Unknown tool "crm_deals"');
+        $this->toolset->call('crm_deals', [], $this->principal('*:read', '*:write'), $this->ctx);
+    }
+
+    public function test_deal_set_get_delete_round_trip_with_links(): void
+    {
+        $write = $this->principal('nimbuscms.crm:read', 'nimbuscms.crm:write');
+        $c     = $this->toolset->call('crm_contact_set', ['first_name' => 'Ada'], $write, $this->ctx);
+        $o     = $this->toolset->call('crm_organization_set', ['name' => 'Acme'], $write, $this->ctx);
+
+        $out = $this->toolset->call('crm_deal_set', [
+            'title' => 'Engine build', 'value' => '1500.5', 'currency' => 'gbp', 'stage' => 'proposal',
+            'contact_id' => $c['contact']['id'], 'org_id' => $o['organization']['id'],
+        ], $write, $this->ctx);
+        self::assertTrue($out['ok']);
+        self::assertSame('1500.50', $out['deal']['value'], 'money is normalised to two places');
+        self::assertSame('GBP', $out['deal']['currency'], 'currency is upper-cased');
+        self::assertSame('Ada', $out['deal']['contact']);
+        self::assertSame('Acme', $out['deal']['organization']);
+        $dealId = $out['deal']['id'];
+
+        $got = $this->toolset->call('crm_deal_get', ['id' => $dealId], $write, $this->ctx);
+        self::assertSame('proposal', $got['deal']['stage']);
+
+        // An activity can hang off the deal, and goes with it on delete.
+        $this->toolset->call('crm_activity_add', ['subject_type' => 'deal', 'subject_id' => $dealId, 'body' => 'Sent proposal.'], $write, $this->ctx);
+        self::assertSame(1, $this->toolset->call('crm_activities', ['subject_type' => 'deal', 'subject_id' => $dealId], $write, $this->ctx)['count']);
+
+        $del = $this->toolset->call('crm_deal_delete', ['id' => $dealId], $write, $this->ctx);
+        self::assertTrue($del['deleted']);
+        self::assertSame([], $this->toolset->call('crm_activities', ['subject_type' => 'deal', 'subject_id' => $dealId], $write, $this->ctx)['activities'], 'the deal timeline goes with it');
+    }
+
+    public function test_deals_filter_by_status(): void
+    {
+        $write = $this->principal('nimbuscms.crm:read', 'nimbuscms.crm:write');
+        $this->toolset->call('crm_deal_set', ['title' => 'Open one', 'status' => 'open'], $write, $this->ctx);
+        $this->toolset->call('crm_deal_set', ['title' => 'Won one', 'status' => 'won'], $write, $this->ctx);
+
+        self::assertSame(1, $this->toolset->call('crm_deals', ['status' => 'won'], $write, $this->ctx)['count']);
+        self::assertSame(2, $this->toolset->call('crm_deals', [], $write, $this->ctx)['count']);
+    }
+
+    public function test_a_deal_without_a_title_comes_back_as_data(): void
+    {
+        $out = $this->toolset->call('crm_deal_set', ['value' => '100'], $this->principal('nimbuscms.crm:write'), $this->ctx);
+        self::assertFalse($out['ok']);
+        self::assertSame('invalid', $out['error']);
+    }
+
+    public function test_a_bad_deal_value_comes_back_as_data(): void
+    {
+        $out = $this->toolset->call('crm_deal_set', ['title' => 'X', 'value' => '-5'], $this->principal('nimbuscms.crm:write'), $this->ctx);
         self::assertFalse($out['ok']);
         self::assertSame('invalid', $out['error']);
     }
