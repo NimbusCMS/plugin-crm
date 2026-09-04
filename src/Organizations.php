@@ -96,15 +96,17 @@ final class Organizations
     }
 
     /**
-     * Delete an organization atomically: its contacts are **kept** (their `org_id`
-     * is NULLed, never cascaded into a delete), its own activity timeline is
-     * removed (those belong to the company, not to any surviving person), and then
-     * the org itself. Returns true when an org was removed.
+     * Delete an organization atomically: its contacts and deals are **kept** (their
+     * `org_id` is NULLed, never cascaded into a delete), its own activity timeline is
+     * removed (those belong to the company, not to any surviving person or deal), and
+     * then the org itself. Returns true when an org was removed.
      */
     public function delete(int $id): bool
     {
         return (bool) $this->storage()->transaction(function () use ($id): bool {
             $this->storage()->execute('UPDATE ' . Schema::CONTACT . ' SET org_id = NULL WHERE org_id = :id', ['id' => $id]);
+            // A deal outlives the company, but must not dangle: clear the link.
+            $this->storage()->execute('UPDATE ' . Schema::DEAL . ' SET org_id = NULL WHERE org_id = :id', ['id' => $id]);
             $this->storage()->execute(
                 'DELETE FROM ' . Schema::ACTIVITY . ' WHERE subject_type = :type AND subject_id = :id',
                 ['type' => Activities::SUBJECT_ORGANIZATION, 'id' => $id],

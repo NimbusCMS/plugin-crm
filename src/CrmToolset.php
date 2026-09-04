@@ -12,8 +12,9 @@ use Nimbus\Mcp\PluginToolset;
 /**
  * The CRM over MCP — an agent is a first-class operator of the CRM (ADR 0009/0016).
  *
- * Tools under the `crm` namespace: `contacts` (list/search) and `contact_get`
- * (reads); `contact_set` (create/update) and `contact_delete` (writes). The
+ * Tools under the `crm` namespace cover contacts, organizations, the activity
+ * timeline and the deal pipeline — reads (`*s`/`*_get`/`activities`) and writes
+ * (`*_set`/`*_add`/`*_delete`). The
  * {@see PluginToolset} base gates every one on this plugin's own `nimbuscms.crm`
  * capability (ADR 0015/0016) — a write tool needs `:write`, a read needs `:read`,
  * both **unreachable by a content `*:write` token** and invisible (a denied tool
@@ -29,6 +30,7 @@ final class CrmToolset extends PluginToolset
         private Contacts $contacts,
         private Organizations $organizations,
         private Activities $activities,
+        private Deals $deals,
     ) {
     }
 
@@ -39,8 +41,9 @@ final class CrmToolset extends PluginToolset
 
     protected function tools(): array
     {
-        $id    = ['type' => 'integer', 'description' => 'The contact id.'];
-        $orgId = ['type' => 'integer', 'description' => 'The organization id.'];
+        $id       = ['type' => 'integer', 'description' => 'The contact id.'];
+        $orgId    = ['type' => 'integer', 'description' => 'The organization id.'];
+        $subjects = [Activities::SUBJECT_CONTACT, Activities::SUBJECT_ORGANIZATION, Activities::SUBJECT_DEAL];
 
         return [
             new PluginTool('contacts', 'read', 'List contacts (all, or those whose name or email matches a search).', [
@@ -100,21 +103,21 @@ final class CrmToolset extends PluginToolset
                 'properties' => ['id' => $orgId],
             ], $this->organizationDelete(...)),
 
-            new PluginTool('activities', 'read', 'The activity timeline for one subject (a contact or an organization), most recent first.', [
+            new PluginTool('activities', 'read', 'The activity timeline for one subject (a contact, organization or deal), most recent first.', [
                 'type'       => 'object',
                 'required'   => ['subject_type', 'subject_id'],
                 'properties' => [
-                    'subject_type' => ['type' => 'string', 'enum' => [Activities::SUBJECT_CONTACT, Activities::SUBJECT_ORGANIZATION], 'description' => 'Whose timeline: "contact" or "organization".'],
-                    'subject_id'   => ['type' => 'integer', 'description' => 'The contact or organization id.'],
+                    'subject_type' => ['type' => 'string', 'enum' => $subjects, 'description' => 'Whose timeline: "contact", "organization" or "deal".'],
+                    'subject_id'   => ['type' => 'integer', 'description' => 'The contact, organization or deal id.'],
                 ],
             ], $this->activities(...)),
 
-            new PluginTool('activity_add', 'write', 'Log an activity (a note/call/email/meeting) against a contact or organization. Recorded under your token name.', [
+            new PluginTool('activity_add', 'write', 'Log an activity (a note/call/email/meeting) against a contact, organization or deal. Recorded under your token name.', [
                 'type'       => 'object',
                 'required'   => ['subject_type', 'subject_id'],
                 'properties' => [
-                    'subject_type' => ['type' => 'string', 'enum' => [Activities::SUBJECT_CONTACT, Activities::SUBJECT_ORGANIZATION], 'description' => 'What to attach it to: "contact" or "organization".'],
-                    'subject_id'   => ['type' => 'integer', 'description' => 'The existing contact or organization id.'],
+                    'subject_type' => ['type' => 'string', 'enum' => $subjects, 'description' => 'What to attach it to: "contact", "organization" or "deal".'],
+                    'subject_id'   => ['type' => 'integer', 'description' => 'The existing contact, organization or deal id.'],
                     'kind'         => ['type' => 'string', 'enum' => Activities::KINDS, 'description' => 'The kind of activity. Defaults to "note".'],
                     'body'         => ['type' => 'string', 'description' => 'What happened (plain text). Optional.'],
                     'occurred_at'  => ['type' => 'string', 'description' => 'When it happened, "YYYY-MM-DD HH:MM[:SS]". Defaults to now.'],
@@ -126,6 +129,40 @@ final class CrmToolset extends PluginToolset
                 'required'   => ['id'],
                 'properties' => ['id' => ['type' => 'integer', 'description' => 'The activity id.']],
             ], $this->activityDelete(...)),
+
+            new PluginTool('deals', 'read', 'List deals in the pipeline (optionally filtered by status, or searched by title).', [
+                'type'       => 'object',
+                'properties' => [
+                    'q'      => ['type' => 'string', 'description' => 'Optional search over the deal title.'],
+                    'status' => ['type' => 'string', 'enum' => Deals::STATUSES, 'description' => 'Optional filter: "open", "won" or "lost".'],
+                ],
+            ], $this->deals(...)),
+
+            new PluginTool('deal_get', 'read', 'One deal by id, or none.', [
+                'type'       => 'object',
+                'required'   => ['id'],
+                'properties' => ['id' => ['type' => 'integer', 'description' => 'The deal id.']],
+            ], $this->dealGet(...)),
+
+            new PluginTool('deal_set', 'write', 'Create a deal (omit id) or update one (with id). Only the fields you send change.', [
+                'type'       => 'object',
+                'properties' => [
+                    'id'         => ['type' => 'integer', 'description' => 'Existing deal id to update; omit to create.'],
+                    'title'      => ['type' => 'string', 'description' => 'Deal title (required to create).'],
+                    'value'      => ['type' => 'string', 'description' => 'Money value, non-negative, up to 2 decimals. Optional; blank to clear.'],
+                    'currency'   => ['type' => 'string', 'description' => '3-letter currency code. Defaults to USD.'],
+                    'stage'      => ['type' => 'string', 'enum' => Deals::STAGES, 'description' => 'Pipeline stage. Defaults to "lead".'],
+                    'status'     => ['type' => 'string', 'enum' => Deals::STATUSES, 'description' => 'Deal status. Defaults to "open".'],
+                    'contact_id' => ['type' => 'integer', 'description' => 'An existing contact to link. Optional; blank to unlink.'],
+                    'org_id'     => ['type' => 'integer', 'description' => 'An existing organization to link. Optional; blank to unlink.'],
+                ],
+            ], $this->dealSet(...)),
+
+            new PluginTool('deal_delete', 'write', 'Delete a deal by id, together with its activity timeline.', [
+                'type'       => 'object',
+                'required'   => ['id'],
+                'properties' => ['id' => ['type' => 'integer', 'description' => 'The deal id.']],
+            ], $this->dealDelete(...)),
         ];
     }
 
@@ -249,6 +286,48 @@ final class CrmToolset extends PluginToolset
     {
         $id = $this->requireInt($a, 'id');
         return ['ok' => true, 'deleted' => $this->activities->delete($id) > 0];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function deals(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $list = $this->deals->all($this->nullableStr($a, 'q'), $this->nullableStr($a, 'status'));
+        return ['deals' => $list, 'count' => count($list)];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function dealGet(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $id = $this->requireInt($a, 'id');
+        return ['id' => $id, 'deal' => $this->deals->get($id)];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function dealSet(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        return $this->guard(function () use ($a): array {
+            $id = $this->deals->save($this->nullableInt($a, 'id'), $a, $this->now());
+            return ['ok' => true, 'deal' => $this->deals->get($id)];
+        });
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function dealDelete(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $id = $this->requireInt($a, 'id');
+        return ['ok' => true, 'deleted' => $this->deals->delete($id) > 0];
     }
 
     // --- helpers ---------------------------------------------------------

@@ -14,8 +14,7 @@ use Nimbus\Plugin\PluginStorage;
  *
  *  - **`subject_type` is a write-time allow-list** ({@see SUBJECTS}), never
  *    interpolated into SQL. It selects the table the subject must live in, and is
- *    stored as a bound parameter. `deal` is reserved in the column ENUM but not in
- *    the allow-list — it is rejected until the deals slice adds it here.
+ *    stored as a bound parameter — a contact, an organization or a deal.
  *  - **The subject must exist.** A bound `SELECT` against the mapped table rejects a
  *    dangling reference, so an activity can never point at a contact/org that isn't
  *    there.
@@ -37,6 +36,7 @@ final class Activities
     private const SUBJECTS = [
         self::SUBJECT_CONTACT      => Schema::CONTACT,
         self::SUBJECT_ORGANIZATION => Schema::ORGANIZATION,
+        self::SUBJECT_DEAL         => Schema::DEAL,
     ];
 
     /** @var list<string> */

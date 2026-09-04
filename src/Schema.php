@@ -19,6 +19,7 @@ final class Schema
     public const CONTACT      = 'crm_contact';
     public const ORGANIZATION = 'crm_organization';
     public const ACTIVITY     = 'crm_activity';
+    public const DEAL         = 'crm_deal';
 
     /** @return list<string> each statement individually idempotent (ADR 0005) */
     public static function contacts(): array
@@ -88,6 +89,37 @@ final class Schema
                 author       VARCHAR(191) NULL,
                 created_at   DATETIME NOT NULL,
                 INDEX idx_activity_subject (subject_type, subject_id, occurred_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ];
+    }
+
+    /**
+     * The deal pipeline — an opportunity worth a `value`, moving through a `stage`
+     * and ending `open`/`won`/`lost`. `contact_id`/`org_id` are **soft references**
+     * (no hard FK) validated at write and NULLed when their contact/org is deleted,
+     * so a deal is never destroyed — or left dangling — because a linked record was.
+     * `stage` and `status` are write-time allow-lists (never interpolated); `value`
+     * is a bounded, non-negative decimal.
+     *
+     * @return list<string> each statement individually idempotent (ADR 0005)
+     */
+    public static function deals(): array
+    {
+        return [
+            'CREATE TABLE IF NOT EXISTS ' . self::DEAL . " (
+                id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                title      VARCHAR(200) NOT NULL,
+                value      DECIMAL(18,2) NULL,
+                currency   CHAR(3) NOT NULL DEFAULT 'USD',
+                stage      ENUM('lead','qualified','proposal','negotiation') NOT NULL DEFAULT 'lead',
+                status     ENUM('open','won','lost') NOT NULL DEFAULT 'open',
+                contact_id BIGINT UNSIGNED NULL,
+                org_id     BIGINT UNSIGNED NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                INDEX idx_deal_status_stage (status, stage),
+                INDEX idx_deal_contact (contact_id),
+                INDEX idx_deal_org (org_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ];
     }

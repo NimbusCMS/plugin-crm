@@ -8,6 +8,7 @@ use Nimbus\Database\Connection;
 use Nimbus\Plugin\PluginStorage;
 use NimbusCMS\Crm\Activities;
 use NimbusCMS\Crm\Contacts;
+use NimbusCMS\Crm\Deals;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
 use PHPUnit\Framework\TestCase;
@@ -24,6 +25,7 @@ final class ContactsTest extends TestCase
     private Contacts $contacts;
     private Organizations $organizations;
     private Activities $activities;
+    private Deals $deals;
 
     protected function setUp(): void
     {
@@ -34,17 +36,19 @@ final class ContactsTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
+        $db->execute('TRUNCATE ' . Schema::DEAL);
 
         $storage             = new PluginStorage($db);
         $this->contacts      = new Contacts(static fn (): PluginStorage => $storage);
         $this->organizations = new Organizations(static fn (): PluginStorage => $storage);
         $this->activities    = new Activities(static fn (): PluginStorage => $storage);
+        $this->deals         = new Deals(static fn (): PluginStorage => $storage);
     }
 
     private const NOW = '2026-01-01 09:00:00';
@@ -156,6 +160,18 @@ final class ContactsTest extends TestCase
 
         self::assertSame(1, $this->contacts->delete($id));
         self::assertSame([], $this->activities->forSubject('contact', $id), 'no activity residue after a contact is forgotten');
+    }
+
+    public function test_deleting_a_contact_keeps_its_deals_but_clears_the_link(): void
+    {
+        $id     = $this->contacts->save(null, ['first_name' => 'Ada'], self::NOW);
+        $dealId = $this->deals->save(null, ['title' => 'Engine build', 'contact_id' => (string) $id], self::NOW);
+
+        self::assertSame(1, $this->contacts->delete($id));
+
+        $deal = $this->deals->get($dealId);
+        self::assertNotNull($deal, 'the deal outlives the contact');
+        self::assertNull($deal['contact_id'], 'the dangling contact link is cleared');
     }
 
     public function test_deleting_an_org_unlinks_its_contacts_but_keeps_them(): void

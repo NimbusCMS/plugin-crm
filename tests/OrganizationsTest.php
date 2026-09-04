@@ -8,6 +8,7 @@ use Nimbus\Database\Connection;
 use Nimbus\Plugin\PluginStorage;
 use NimbusCMS\Crm\Activities;
 use NimbusCMS\Crm\Contacts;
+use NimbusCMS\Crm\Deals;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
 use PHPUnit\Framework\TestCase;
@@ -23,6 +24,7 @@ final class OrganizationsTest extends TestCase
     private Organizations $organizations;
     private Contacts $contacts;
     private Activities $activities;
+    private Deals $deals;
 
     protected function setUp(): void
     {
@@ -33,17 +35,19 @@ final class OrganizationsTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
+        $db->execute('TRUNCATE ' . Schema::DEAL);
 
         $storage             = new PluginStorage($db);
         $this->organizations = new Organizations(static fn (): PluginStorage => $storage);
         $this->contacts      = new Contacts(static fn (): PluginStorage => $storage);
         $this->activities    = new Activities(static fn (): PluginStorage => $storage);
+        $this->deals         = new Deals(static fn (): PluginStorage => $storage);
     }
 
     private const NOW = '2026-01-01 09:00:00';
@@ -131,6 +135,18 @@ final class OrganizationsTest extends TestCase
 
         self::assertSame([], $this->activities->forSubject('organization', $orgId), "the company's own timeline is removed with it");
         self::assertCount(1, $this->activities->forSubject('contact', $cId), "the surviving person's activities are kept");
+    }
+
+    public function test_delete_keeps_its_deals_but_clears_the_link(): void
+    {
+        $orgId  = $this->organizations->save(null, ['name' => 'Doomed Co'], self::NOW);
+        $dealId = $this->deals->save(null, ['title' => 'Big renewal', 'org_id' => (string) $orgId], self::NOW);
+
+        self::assertTrue($this->organizations->delete($orgId));
+
+        $deal = $this->deals->get($dealId);
+        self::assertNotNull($deal, 'the deal outlives the company');
+        self::assertNull($deal['org_id'], 'the dangling org link is cleared');
     }
 
     public function test_exists_reports_presence(): void

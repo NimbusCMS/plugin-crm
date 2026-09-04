@@ -19,7 +19,7 @@ use Nimbus\Plugin\PluginStorage;
  * touching no core data; no public/site surface at all.
  *
  * Slice 1: contacts. Slice 2: organizations + the contact→org link. Slice 3: the
- * activity timeline against a contact or an organization.
+ * activity timeline. Slice 4: the deal pipeline.
  */
 final class CrmPlugin implements Plugin
 {
@@ -31,6 +31,7 @@ final class CrmPlugin implements Plugin
         $context->migrations()->register('001_contacts', Schema::contacts());
         $context->migrations()->register('002_organizations', Schema::organizations());
         $context->migrations()->register('003_activities', Schema::activities());
+        $context->migrations()->register('004_deals', Schema::deals());
 
         // Grantable, wildcard-immune: nimbuscms.crm:read / :write. Contact data is
         // PII — a content *:write token can never read or change it.
@@ -41,9 +42,10 @@ final class CrmPlugin implements Plugin
         $contacts      = new Contacts($storage);
         $organizations = new Organizations($storage);
         $activities    = new Activities($storage);
+        $deals         = new Deals($storage);
 
         // The agent surface — every tool gates on nimbuscms.crm:read|write (ADR 0016).
-        $context->mcp()->register(new CrmToolset($contacts, $organizations, $activities));
+        $context->mcp()->register(new CrmToolset($contacts, $organizations, $activities, $deals));
 
         // Admin: search + list + create/edit form. Gated on nimbuscms.crm:write
         // (same as the write tools) so a content-only editor can't reach PII; the
@@ -125,13 +127,57 @@ final class CrmPlugin implements Plugin
             return Response::redirect('/admin/crm-organizations?ok=deleted');
         });
 
-        // Activities are logged inline on a contact or an organization. The same two
-        // actions serve both record pages (each inherits its page's crm:write + CSRF
-        // gate); the subject on the form decides where we redirect back to. The admin
-        // sets no author — there is no spoofable author field (an MCP add records the
-        // token name; see CrmToolset).
+        // Deals: the pipeline board. Same crm:write gate.
+        $context->adminPages()->register(
+            'crm-deals',
+            'Deals',
+            '📊',
+            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new DealsAdmin($deals, $contacts, $organizations, $activities))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
+            self::ID . ':write',
+        );
+
+        $context->adminPages()->action('crm-deals', 'deal-save', static function (Request $r) use ($deals): Response {
+            $fields = [
+                'title'      => (string) ($r->input('title') ?? ''),
+                'value'      => (string) ($r->input('value') ?? ''),
+                'currency'   => (string) ($r->input('currency') ?? ''),
+                'stage'      => (string) ($r->input('stage') ?? ''),
+                'status'     => (string) ($r->input('status') ?? ''),
+                'contact_id' => (string) ($r->input('contact_id') ?? ''),
+                'org_id'     => (string) ($r->input('org_id') ?? ''),
+            ];
+            $idIn = trim((string) ($r->input('id') ?? ''));
+            $id   = ($idIn !== '' && ctype_digit($idIn)) ? (int) $idIn : null;
+            try {
+                $deals->save($id, $fields, date('Y-m-d H:i:s'));
+                return Response::redirect('/admin/crm-deals?ok=saved');
+            } catch (\InvalidArgumentException $e) {
+                $code = str_contains($e->getMessage(), 'title') ? 'notitle' : 'invalid';
+                return Response::redirect('/admin/crm-deals?err=' . $code);
+            } catch (\Throwable) {
+                return Response::redirect('/admin/crm-deals?err=invalid');
+            }
+        });
+
+        $context->adminPages()->action('crm-deals', 'deal-delete', static function (Request $r) use ($deals): Response {
+            $idIn = trim((string) ($r->input('id') ?? ''));
+            if ($idIn !== '' && ctype_digit($idIn)) {
+                $deals->delete((int) $idIn);
+            }
+            return Response::redirect('/admin/crm-deals?ok=deleted');
+        });
+
+        // Activities are logged inline on a contact, an organization or a deal. The
+        // same two actions serve every record page (each inherits its page's crm:write
+        // + CSRF gate); the subject on the form decides where we redirect back to. The
+        // admin sets no author — there is no spoofable author field (an MCP add records
+        // the token name; see CrmToolset).
         $back = static function (Request $r): string {
-            $page = ($r->input('subject_type') === Activities::SUBJECT_ORGANIZATION) ? 'crm-organizations' : 'crm';
+            $page = match ($r->input('subject_type')) {
+                Activities::SUBJECT_ORGANIZATION => 'crm-organizations',
+                Activities::SUBJECT_DEAL         => 'crm-deals',
+                default                          => 'crm',
+            };
             $sid  = trim((string) ($r->input('subject_id') ?? ''));
             $edit = ($sid !== '' && ctype_digit($sid)) ? '?edit=' . $sid . '&' : '?';
             return '/admin/' . $page . $edit;
@@ -162,7 +208,7 @@ final class CrmPlugin implements Plugin
             return Response::redirect($back($r) . 'ok=activitygone');
         };
 
-        foreach (['crm', 'crm-organizations'] as $page) {
+        foreach (['crm', 'crm-organizations', 'crm-deals'] as $page) {
             $context->adminPages()->action($page, 'activity-add', $addActivity);
             $context->adminPages()->action($page, 'activity-delete', $deleteActivity);
         }
