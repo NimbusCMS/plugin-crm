@@ -60,18 +60,19 @@ final class Contacts
         $email = $this->email($fields, $existing);
         $phone = $this->optStr($fields, 'phone', $existing, self::MAX_PHONE);
         $notes = $this->optStr($fields, 'notes', $existing, self::MAX_NOTES);
+        $orgId = $this->orgId($fields, $existing);
 
         if ($id === null) {
             return $this->storage()->insert(
-                'INSERT INTO ' . Schema::CONTACT . ' (first_name, last_name, email, phone, notes, created_at, updated_at)
-                 VALUES (:first, :last, :email, :phone, :notes, :created, :updated)',
-                ['first' => $first, 'last' => $last, 'email' => $email, 'phone' => $phone, 'notes' => $notes, 'created' => $now, 'updated' => $now],
+                'INSERT INTO ' . Schema::CONTACT . ' (org_id, first_name, last_name, email, phone, notes, created_at, updated_at)
+                 VALUES (:org, :first, :last, :email, :phone, :notes, :created, :updated)',
+                ['org' => $orgId, 'first' => $first, 'last' => $last, 'email' => $email, 'phone' => $phone, 'notes' => $notes, 'created' => $now, 'updated' => $now],
             );
         }
 
         $this->storage()->execute(
-            'UPDATE ' . Schema::CONTACT . ' SET first_name = :first, last_name = :last, email = :email, phone = :phone, notes = :notes, updated_at = :now WHERE id = :id',
-            ['first' => $first, 'last' => $last, 'email' => $email, 'phone' => $phone, 'notes' => $notes, 'now' => $now, 'id' => $id],
+            'UPDATE ' . Schema::CONTACT . ' SET org_id = :org, first_name = :first, last_name = :last, email = :email, phone = :phone, notes = :notes, updated_at = :now WHERE id = :id',
+            ['org' => $orgId, 'first' => $first, 'last' => $last, 'email' => $email, 'phone' => $phone, 'notes' => $notes, 'now' => $now, 'id' => $id],
         );
         return $id;
     }
@@ -80,12 +81,14 @@ final class Contacts
      * One contact by id, or null. Returned raw (unescaped) — the render layer
      * escapes.
      *
-     * @return array{id:int,first_name:string,last_name:string,email:?string,phone:?string,notes:?string,created_at:string,updated_at:string}|null
+     * @return array{id:int,org_id:?int,organization:?string,first_name:string,last_name:string,email:?string,phone:?string,notes:?string,created_at:string,updated_at:string}|null
      */
     public function get(int $id): ?array
     {
         $row = $this->storage()->selectOne(
-            'SELECT id, first_name, last_name, email, phone, notes, created_at, updated_at FROM ' . Schema::CONTACT . ' WHERE id = :id',
+            'SELECT c.id, c.org_id, c.first_name, c.last_name, c.email, c.phone, c.notes, c.created_at, c.updated_at, o.name AS organization
+             FROM ' . Schema::CONTACT . ' c LEFT JOIN ' . Schema::ORGANIZATION . ' o ON o.id = c.org_id
+             WHERE c.id = :id',
             ['id' => $id],
         );
         return $row === null ? null : $this->hydrate($row);
@@ -96,24 +99,24 @@ final class Contacts
      * filtered to those whose name or email contains `$q` (a bound, wildcard-escaped
      * LIKE — never string-built SQL).
      *
-     * @return list<array{id:int,first_name:string,last_name:string,email:?string,phone:?string,notes:?string,created_at:string,updated_at:string}>
+     * @return list<array{id:int,org_id:?int,organization:?string,first_name:string,last_name:string,email:?string,phone:?string,notes:?string,created_at:string,updated_at:string}>
      */
     public function all(?string $q = null): array
     {
+        $select = 'SELECT c.id, c.org_id, c.first_name, c.last_name, c.email, c.phone, c.notes, c.created_at, c.updated_at, o.name AS organization
+                   FROM ' . Schema::CONTACT . ' c LEFT JOIN ' . Schema::ORGANIZATION . ' o ON o.id = c.org_id';
+
         $q = $q !== null ? trim($q) : '';
         if ($q === '') {
-            $rows = $this->storage()->select(
-                'SELECT id, first_name, last_name, email, phone, notes, created_at, updated_at FROM ' . Schema::CONTACT . ' ORDER BY updated_at DESC, id DESC',
-            );
+            $rows = $this->storage()->select($select . ' ORDER BY c.updated_at DESC, c.id DESC');
             return array_map($this->hydrate(...), $rows);
         }
 
         // Escape LIKE wildcards so a `%`/`_` in the term is a literal, and bind it.
         $like = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], mb_substr($q, 0, 100)) . '%';
         $rows = $this->storage()->select(
-            'SELECT id, first_name, last_name, email, phone, notes, created_at, updated_at FROM ' . Schema::CONTACT .
-            " WHERE first_name LIKE :q ESCAPE '\\\\' OR last_name LIKE :q2 ESCAPE '\\\\' OR email LIKE :q3 ESCAPE '\\\\'
-              ORDER BY updated_at DESC, id DESC",
+            $select . " WHERE c.first_name LIKE :q ESCAPE '\\\\' OR c.last_name LIKE :q2 ESCAPE '\\\\' OR c.email LIKE :q3 ESCAPE '\\\\'
+              ORDER BY c.updated_at DESC, c.id DESC",
             ['q' => $like, 'q2' => $like, 'q3' => $like],
         );
         return array_map($this->hydrate(...), $rows);
@@ -188,13 +191,42 @@ final class Contacts
     }
 
     /**
+     * The organization a contact belongs to: null, or an id that must exist in this
+     * install (a soft ref, checked at write so a dangling id can't be stored). Absent
+     * on an update keeps the stored value.
+     *
+     * @param array<string,mixed>      $fields
+     * @param array<string,mixed>|null $existing
+     */
+    private function orgId(array $fields, ?array $existing): ?int
+    {
+        if (!array_key_exists('org_id', $fields)) {
+            return $existing !== null ? ($existing['org_id'] === null ? null : (int) $existing['org_id']) : null;
+        }
+        $raw = trim((string) $fields['org_id']);
+        if ($raw === '') {
+            return null;
+        }
+        if (preg_match('/^\d+$/', $raw) !== 1 || (int) $raw < 1) {
+            throw new \InvalidArgumentException('"org_id" must be a positive whole number or blank.');
+        }
+        $id = (int) $raw;
+        if ($this->storage()->selectOne('SELECT id FROM ' . Schema::ORGANIZATION . ' WHERE id = :id', ['id' => $id]) === null) {
+            throw new \InvalidArgumentException("No organization with id {$id}.");
+        }
+        return $id;
+    }
+
+    /**
      * @param array<string,mixed> $row
-     * @return array{id:int,first_name:string,last_name:string,email:?string,phone:?string,notes:?string,created_at:string,updated_at:string}
+     * @return array{id:int,org_id:?int,organization:?string,first_name:string,last_name:string,email:?string,phone:?string,notes:?string,created_at:string,updated_at:string}
      */
     private function hydrate(array $row): array
     {
         return [
-            'id'         => (int) $row['id'],
+            'id'           => (int) $row['id'],
+            'org_id'       => $row['org_id'] === null ? null : (int) $row['org_id'],
+            'organization' => ($row['organization'] ?? null) === null ? null : (string) $row['organization'],
             'first_name' => (string) $row['first_name'],
             'last_name'  => (string) $row['last_name'],
             'email'      => $row['email'] === null ? null : (string) $row['email'],

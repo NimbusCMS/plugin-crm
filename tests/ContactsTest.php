@@ -7,6 +7,7 @@ namespace NimbusCMS\Crm\Tests;
 use Nimbus\Database\Connection;
 use Nimbus\Plugin\PluginStorage;
 use NimbusCMS\Crm\Contacts;
+use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
 use PHPUnit\Framework\TestCase;
 
@@ -14,10 +15,13 @@ use PHPUnit\Framework\TestCase;
  * The Contacts service — the write discipline the security review pinned: a field
  * allow-list (no over-posting), validation (name required, email well-formed,
  * length caps), bound + wildcard-escaped search, store-raw, and a total delete.
+ * Slice 2 adds the org link: `org_id` validated to an existing org on write, and
+ * cleared (never cascaded into a delete) when its org is removed.
  */
 final class ContactsTest extends TestCase
 {
     private Contacts $contacts;
+    private Organizations $organizations;
 
     protected function setUp(): void
     {
@@ -28,13 +32,15 @@ final class ContactsTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach (Schema::contacts() as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
+        $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
 
-        $storage        = new PluginStorage($db);
-        $this->contacts = new Contacts(static fn (): PluginStorage => $storage);
+        $storage             = new PluginStorage($db);
+        $this->contacts      = new Contacts(static fn (): PluginStorage => $storage);
+        $this->organizations = new Organizations(static fn (): PluginStorage => $storage);
     }
 
     private const NOW = '2026-01-01 09:00:00';
@@ -108,5 +114,44 @@ final class ContactsTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->contacts->save(424242, ['first_name' => 'Ghost'], self::NOW);
+    }
+
+    public function test_a_contact_links_to_an_existing_organization(): void
+    {
+        $orgId = $this->organizations->save(null, ['name' => 'Analytical Engines Ltd'], self::NOW);
+        $id    = $this->contacts->save(null, ['first_name' => 'Ada', 'org_id' => (string) $orgId], self::NOW);
+
+        $c = $this->contacts->get($id);
+        self::assertNotNull($c);
+        self::assertSame($orgId, $c['org_id']);
+        self::assertSame('Analytical Engines Ltd', $c['organization'], 'the org name is resolved by the join');
+    }
+
+    public function test_linking_to_a_missing_organization_is_rejected(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->contacts->save(null, ['first_name' => 'Ada', 'org_id' => '999999'], self::NOW);
+    }
+
+    public function test_org_id_can_be_cleared_by_sending_blank(): void
+    {
+        $orgId = $this->organizations->save(null, ['name' => 'Acme'], self::NOW);
+        $id    = $this->contacts->save(null, ['first_name' => 'Ada', 'org_id' => (string) $orgId], self::NOW);
+        self::assertSame($orgId, $this->contacts->get($id)['org_id']);
+
+        $this->contacts->save($id, ['org_id' => ''], self::NOW);
+        self::assertNull($this->contacts->get($id)['org_id'], 'a blank org_id unlinks');
+    }
+
+    public function test_deleting_an_org_unlinks_its_contacts_but_keeps_them(): void
+    {
+        $orgId = $this->organizations->save(null, ['name' => 'Doomed Co'], self::NOW);
+        $id    = $this->contacts->save(null, ['first_name' => 'Ada', 'org_id' => (string) $orgId], self::NOW);
+
+        self::assertTrue($this->organizations->delete($orgId));
+
+        $c = $this->contacts->get($id);
+        self::assertNotNull($c, 'the person survives the company being deleted');
+        self::assertNull($c['org_id'], 'the dangling link is cleared, not cascaded');
     }
 }
