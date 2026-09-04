@@ -12,6 +12,7 @@ use NimbusCMS\Crm\Deals;
 use NimbusCMS\Crm\DealsAdmin;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
+use NimbusCMS\Crm\Tags;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -35,13 +36,15 @@ final class DealsAdminTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals(), ...Schema::tags()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
         $db->execute('TRUNCATE ' . Schema::DEAL);
+        $db->execute('TRUNCATE ' . Schema::TAG);
+        $db->execute('TRUNCATE ' . Schema::TAGGABLE);
 
         $storage     = new PluginStorage($db);
         $this->deals = new Deals(static fn (): PluginStorage => $storage);
@@ -50,6 +53,7 @@ final class DealsAdminTest extends TestCase
             new Contacts(static fn (): PluginStorage => $storage),
             new Organizations(static fn (): PluginStorage => $storage),
             new Activities(static fn (): PluginStorage => $storage),
+            new Tags(static fn (): PluginStorage => $storage),
         );
     }
 

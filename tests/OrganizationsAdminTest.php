@@ -10,6 +10,7 @@ use NimbusCMS\Crm\Activities;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\OrganizationsAdmin;
 use NimbusCMS\Crm\Schema;
+use NimbusCMS\Crm\Tags;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -22,6 +23,7 @@ final class OrganizationsAdminTest extends TestCase
 {
     private Organizations $organizations;
     private Activities $activities;
+    private Tags $tags;
     private OrganizationsAdmin $admin;
 
     protected function setUp(): void
@@ -33,16 +35,19 @@ final class OrganizationsAdminTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::organizations(), ...Schema::activities()] as $sql) {
+        foreach ([...Schema::organizations(), ...Schema::activities(), ...Schema::tags()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
+        $db->execute('TRUNCATE ' . Schema::TAG);
+        $db->execute('TRUNCATE ' . Schema::TAGGABLE);
 
         $storage             = new PluginStorage($db);
         $this->organizations = new Organizations(static fn (): PluginStorage => $storage);
         $this->activities    = new Activities(static fn (): PluginStorage => $storage);
-        $this->admin         = new OrganizationsAdmin($this->organizations, $this->activities);
+        $this->tags          = new Tags(static fn (): PluginStorage => $storage);
+        $this->admin         = new OrganizationsAdmin($this->organizations, $this->activities, $this->tags);
     }
 
     public function test_the_list_escapes_hostile_author_values(): void

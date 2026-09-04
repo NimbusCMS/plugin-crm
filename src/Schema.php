@@ -20,6 +20,8 @@ final class Schema
     public const ORGANIZATION = 'crm_organization';
     public const ACTIVITY     = 'crm_activity';
     public const DEAL         = 'crm_deal';
+    public const TAG          = 'crm_tag';
+    public const TAGGABLE     = 'crm_taggable';
 
     /** @return list<string> each statement individually idempotent (ADR 0005) */
     public static function contacts(): array
@@ -120,6 +122,40 @@ final class Schema
                 INDEX idx_deal_status_stage (status, stage),
                 INDEX idx_deal_contact (contact_id),
                 INDEX idx_deal_org (org_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ];
+    }
+
+    /**
+     * Tags — a shared vocabulary of labels, and the **normalized, polymorphic** links
+     * that apply them to a contact, organization or deal (`crm_taggable`). Normalized
+     * rather than a JSON column so "every contact tagged X" is a real indexed query.
+     * A tag name is unique (case-insensitive, via the default collation); a link is
+     * unique per (tag, subject) so tagging twice is a no-op. A subject's delete clears
+     * its links; deleting a tag clears the links but never the subjects.
+     *
+     * @return list<string> each statement individually idempotent (ADR 0005)
+     */
+    public static function tags(): array
+    {
+        return [
+            'CREATE TABLE IF NOT EXISTS ' . self::TAG . ' (
+                id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                name       VARCHAR(60) NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                UNIQUE KEY uniq_tag_name (name)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
+
+            'CREATE TABLE IF NOT EXISTS ' . self::TAGGABLE . " (
+                id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                tag_id        BIGINT UNSIGNED NOT NULL,
+                taggable_type ENUM('contact','organization','deal') NOT NULL,
+                taggable_id   BIGINT UNSIGNED NOT NULL,
+                created_at    DATETIME NOT NULL,
+                UNIQUE KEY uniq_link (tag_id, taggable_type, taggable_id),
+                INDEX idx_taggable (taggable_type, taggable_id),
+                INDEX idx_tag (tag_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ];
     }

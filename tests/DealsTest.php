@@ -11,6 +11,7 @@ use NimbusCMS\Crm\Contacts;
 use NimbusCMS\Crm\Deals;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
+use NimbusCMS\Crm\Tags;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -26,6 +27,7 @@ final class DealsTest extends TestCase
     private Contacts $contacts;
     private Organizations $organizations;
     private Activities $activities;
+    private Tags $tags;
 
     protected function setUp(): void
     {
@@ -36,19 +38,22 @@ final class DealsTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals(), ...Schema::tags()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
         $db->execute('TRUNCATE ' . Schema::DEAL);
+        $db->execute('TRUNCATE ' . Schema::TAG);
+        $db->execute('TRUNCATE ' . Schema::TAGGABLE);
 
         $storage             = new PluginStorage($db);
         $this->deals         = new Deals(static fn (): PluginStorage => $storage);
         $this->contacts      = new Contacts(static fn (): PluginStorage => $storage);
         $this->organizations = new Organizations(static fn (): PluginStorage => $storage);
         $this->activities    = new Activities(static fn (): PluginStorage => $storage);
+        $this->tags          = new Tags(static fn (): PluginStorage => $storage);
     }
 
     private const NOW = '2026-01-01 09:00:00';
@@ -167,6 +172,16 @@ final class DealsTest extends TestCase
         self::assertNull($this->deals->get($id));
         self::assertSame([], $this->activities->forSubject('deal', $id), 'no activity residue');
         self::assertSame(0, $this->deals->delete($id), 'a second delete is a no-op');
+    }
+
+    public function test_delete_clears_its_tag_links(): void
+    {
+        $id    = $this->deals->save(null, ['title' => 'X'], self::NOW);
+        $tagId = $this->tags->findOrCreate('Hot', self::NOW);
+        $this->tags->attach('deal', $id, $tagId, self::NOW);
+
+        self::assertSame(1, $this->deals->delete($id));
+        self::assertSame([], $this->tags->idsFor('deal', $tagId), 'no tag residue for the deleted deal');
     }
 
     public function test_updating_a_missing_deal_is_rejected(): void

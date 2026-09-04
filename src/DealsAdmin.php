@@ -20,8 +20,11 @@ final class DealsAdmin
         'deleted'      => ['ok', 'Deal deleted.'],
         'activity'     => ['ok', 'Activity logged.'],
         'activitygone' => ['ok', 'Activity deleted.'],
+        'tagged'       => ['ok', 'Tag added.'],
+        'untagged'     => ['ok', 'Tag removed.'],
         'notitle'      => ['err', 'A deal needs a title.'],
         'activitybad'  => ['err', 'Could not log that activity — check the details.'],
+        'tagbad'       => ['err', 'Could not add that tag — check the details.'],
         'invalid'      => ['err', 'Check the details and try again.'],
     ];
 
@@ -37,14 +40,18 @@ final class DealsAdmin
         private Contacts $contacts,
         private Organizations $organizations,
         private Activities $activities,
+        private Tags $tags,
     ) {
     }
 
-    public function render(string $csrf = '', ?string $notice = null, ?string $edit = null, ?string $q = null, string $nonce = ''): string
+    public function render(string $csrf = '', ?string $notice = null, ?string $edit = null, ?string $q = null, string $nonce = '', ?string $tag = null): string
     {
         $editId   = ($edit !== null && preg_match('/^\d+$/', trim($edit)) === 1) ? (int) trim($edit) : null;
         $editDeal = $editId !== null ? $this->deals->get($editId) : null;
         $q        = $q !== null ? trim($q) : '';
+        $tagId    = ($tag !== null && preg_match('/^\d+$/', trim($tag)) === 1) ? (int) trim($tag) : null;
+        // When a tag filter is active, the id set restricts the board and results.
+        $only = $tagId !== null ? $this->tags->idsFor(Activities::SUBJECT_DEAL, $tagId) : null;
 
         $html = $this->styles($nonce)
             . '<div class="nb-page-head"><h1>Deals</h1></div>'
@@ -54,12 +61,29 @@ final class DealsAdmin
 
         if ($editDeal !== null) {
             $html .= ActivitiesAdmin::render($csrf, 'crm-deals', Activities::SUBJECT_DEAL, (int) $editDeal['id'], $this->activities->forSubject(Activities::SUBJECT_DEAL, (int) $editDeal['id']), $nonce);
+            $html .= TagsAdmin::block($csrf, 'crm-deals', Activities::SUBJECT_DEAL, (int) $editDeal['id'], $this->tags->tagsFor(Activities::SUBJECT_DEAL, (int) $editDeal['id']), $this->tags->allTags(), $nonce);
         }
 
         $html .= $this->search($q);
-        $html .= $q !== '' ? $this->results($csrf, $q) : $this->board($csrf);
+        $html .= TagsAdmin::filterBar('crm-deals', $this->tags->allTags(), $tagId);
+        $html .= $q !== '' ? $this->results($csrf, $q, $only) : $this->board($csrf, $only);
 
         return $html;
+    }
+
+    /**
+     * Keep only rows whose id is in `$only`; a null filter keeps everything.
+     *
+     * @param list<array<string,mixed>> $rows
+     * @param list<int>|null            $only
+     * @return list<array<string,mixed>>
+     */
+    private function restrict(array $rows, ?array $only): array
+    {
+        if ($only === null) {
+            return $rows;
+        }
+        return array_values(array_filter($rows, static fn (array $d): bool => in_array((int) $d['id'], $only, true)));
     }
 
     /** @param array<string,mixed>|null $edit */
@@ -128,9 +152,10 @@ final class DealsAdmin
             . '</form>';
     }
 
-    private function results(string $csrf, string $q): string
+    /** @param list<int>|null $only */
+    private function results(string $csrf, string $q, ?array $only): string
     {
-        $deals = $this->deals->all($q);
+        $deals = $this->restrict($this->deals->all($q), $only);
         if ($deals === []) {
             return '<p class="nb-muted">No deals match “' . self::e($q) . '”.</p>';
         }
@@ -141,9 +166,10 @@ final class DealsAdmin
         return '<ul class="cr-deal-flat">' . $cards . '</ul>';
     }
 
-    private function board(string $csrf): string
+    /** @param list<int>|null $only */
+    private function board(string $csrf, ?array $only): string
     {
-        $open = $this->deals->all(null, 'open');
+        $open = $this->restrict($this->deals->all(null, 'open'), $only);
 
         $byStage = [];
         foreach (Deals::STAGES as $s) {
@@ -174,13 +200,14 @@ final class DealsAdmin
                 . '</section>';
         }
 
-        return '<div class="cr-board">' . $cols . '</div>' . $this->closed($csrf);
+        return '<div class="cr-board">' . $cols . '</div>' . $this->closed($csrf, $only);
     }
 
-    private function closed(string $csrf): string
+    /** @param list<int>|null $only */
+    private function closed(string $csrf, ?array $only): string
     {
-        $won  = $this->deals->all(null, 'won');
-        $lost = $this->deals->all(null, 'lost');
+        $won  = $this->restrict($this->deals->all(null, 'won'), $only);
+        $lost = $this->restrict($this->deals->all(null, 'lost'), $only);
         if ($won === [] && $lost === []) {
             return '';
         }

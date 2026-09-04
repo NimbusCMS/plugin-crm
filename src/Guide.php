@@ -17,11 +17,11 @@ final class Guide
         # CRM
 
         A back-office CRM: **contacts** (people), the **organizations** (companies) they
-        belong to, an **activity timeline** against any of them, and a **deal pipeline**.
-        It is **PII**, so every tool is gated by the `nimbuscms.crm` capability: a read
-        needs `nimbuscms.crm:read`, a write needs `nimbuscms.crm:write`. A content
-        `*:write` token cannot reach it, and a tool you lack the capability for is
-        invisible.
+        belong to, an **activity timeline** against any of them, a **deal pipeline**, and
+        **tags** you apply and filter by. It is **PII**, so every tool is gated by the
+        `nimbuscms.crm` capability: a read needs `nimbuscms.crm:read`, a write needs
+        `nimbuscms.crm:write`. A content `*:write` token cannot reach it, and a tool you
+        lack the capability for is invisible.
 
         ## Contacts
 
@@ -80,8 +80,27 @@ final class Guide
         - `crm_deal_delete` — remove a deal by `id`, together with its activities.
 
         Deleting a contact or organization keeps any deal that referenced it — the link
-        is simply cleared. Values are stored as you send them and escaped when displayed;
-        there is no public page for CRM data.
+        is simply cleared.
+
+        ## Tags
+
+        Labels applied to any contact, organization or deal, so you can group and filter
+        them ("all contacts tagged VIP").
+
+        - `crm_tags` — list every tag with its usage count.
+        - `crm_tag_create` — create a tag by `name` (or return the one that already has
+          that name).
+        - `crm_tag_delete` — delete a tag by `id`; it is removed from everything it is
+          on, but the records are kept.
+        - `crm_tag_attach` — apply a tag to a subject: `subject_type`
+          (`contact`/`organization`/`deal`) + `subject_id`, and either an existing
+          `tag_id` or a `tag_name` (found or created). Idempotent.
+        - `crm_tag_detach` — remove a tag (`tag_id`) from a subject.
+        - `crm_tags_for` — the tags on one subject.
+        - `crm_tagged` — every record of a type carrying a tag ("all contacts tagged X").
+
+        Deleting a contact, organization or deal removes its tag links. Values are stored
+        as you send them and escaped when displayed; there is no public page for CRM data.
         MD;
     }
 }

@@ -137,6 +137,10 @@ final class Contacts
             );
             // A deal outlives the person, but must not dangle: clear the link.
             $this->storage()->execute('UPDATE ' . Schema::DEAL . ' SET contact_id = NULL WHERE contact_id = :id', ['id' => $id]);
+            $this->storage()->execute(
+                'DELETE FROM ' . Schema::TAGGABLE . ' WHERE taggable_type = :type AND taggable_id = :id',
+                ['type' => Activities::SUBJECT_CONTACT, 'id' => $id],
+            );
             return $this->storage()->execute('DELETE FROM ' . Schema::CONTACT . ' WHERE id = :id', ['id' => $id]);
         });
     }

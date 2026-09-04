@@ -16,6 +16,7 @@ use NimbusCMS\Crm\CrmToolset;
 use NimbusCMS\Crm\Deals;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
+use NimbusCMS\Crm\Tags;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -39,13 +40,15 @@ final class CrmToolsetTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals(), ...Schema::tags()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
         $db->execute('TRUNCATE ' . Schema::DEAL);
+        $db->execute('TRUNCATE ' . Schema::TAG);
+        $db->execute('TRUNCATE ' . Schema::TAGGABLE);
 
         $storage       = new PluginStorage($db);
         $this->toolset = new CrmToolset(
@@ -53,6 +56,7 @@ final class CrmToolsetTest extends TestCase
             new Organizations(static fn (): PluginStorage => $storage),
             new Activities(static fn (): PluginStorage => $storage),
             new Deals(static fn (): PluginStorage => $storage),
+            new Tags(static fn (): PluginStorage => $storage),
         );
         $this->toolset->bindTo('nimbuscms.crm'); // the registrar does this in prod
         $this->ctx = new EntryOpContext('127.0.0.1', '/api/v1/mcp');
@@ -80,13 +84,17 @@ final class CrmToolsetTest extends TestCase
             'crm_organizations', 'crm_organization_get', 'crm_organization_set', 'crm_organization_delete',
             'crm_activities', 'crm_activity_add', 'crm_activity_delete',
             'crm_deals', 'crm_deal_get', 'crm_deal_set', 'crm_deal_delete',
+            'crm_tags', 'crm_tag_create', 'crm_tag_delete', 'crm_tag_attach', 'crm_tag_detach', 'crm_tags_for', 'crm_tagged',
         ], $names);
     }
 
     public function test_a_read_only_token_sees_only_the_read_tools(): void
     {
         $names = array_column($this->toolset->definitions($this->principal('nimbuscms.crm:read')), 'name');
-        self::assertSame(['crm_contacts', 'crm_contact_get', 'crm_organizations', 'crm_organization_get', 'crm_activities', 'crm_deals', 'crm_deal_get'], $names);
+        self::assertSame([
+            'crm_contacts', 'crm_contact_get', 'crm_organizations', 'crm_organization_get',
+            'crm_activities', 'crm_deals', 'crm_deal_get', 'crm_tags', 'crm_tags_for', 'crm_tagged',
+        ], $names);
     }
 
     public function test_a_content_token_cannot_reach_contacts(): void
@@ -282,5 +290,63 @@ final class CrmToolsetTest extends TestCase
         $out = $this->toolset->call('crm_deal_set', ['title' => 'X', 'value' => '-5'], $this->principal('nimbuscms.crm:write'), $this->ctx);
         self::assertFalse($out['ok']);
         self::assertSame('invalid', $out['error']);
+    }
+
+    public function test_a_content_token_cannot_reach_tags_either(): void
+    {
+        $this->expectException(McpError::class);
+        $this->expectExceptionMessage('Unknown tool "crm_tag_attach"');
+        $this->toolset->call('crm_tag_attach', [], $this->principal('*:read', '*:write'), $this->ctx);
+    }
+
+    public function test_tag_attach_by_name_then_tagged_returns_the_records(): void
+    {
+        $write = $this->principal('nimbuscms.crm:read', 'nimbuscms.crm:write');
+        $a = $this->toolset->call('crm_contact_set', ['first_name' => 'Ada'], $write, $this->ctx)['contact']['id'];
+        $b = $this->toolset->call('crm_contact_set', ['first_name' => 'Alan'], $write, $this->ctx)['contact']['id'];
+
+        // Attaching a new tag by name creates it and applies it.
+        $out = $this->toolset->call('crm_tag_attach', ['subject_type' => 'contact', 'subject_id' => $a, 'tag_name' => 'VIP'], $write, $this->ctx);
+        self::assertTrue($out['ok']);
+        self::assertTrue($out['attached']);
+        $tagId = $out['tag_id'];
+
+        // The same tag on a second contact, by id this time.
+        $this->toolset->call('crm_tag_attach', ['subject_type' => 'contact', 'subject_id' => $b, 'tag_id' => $tagId], $write, $this->ctx);
+
+        // Attaching again is idempotent (no second link).
+        $again = $this->toolset->call('crm_tag_attach', ['subject_type' => 'contact', 'subject_id' => $a, 'tag_id' => $tagId], $write, $this->ctx);
+        self::assertFalse($again['attached'], 'already tagged is a no-op');
+
+        // "all contacts tagged VIP" resolves to full records.
+        $tagged = $this->toolset->call('crm_tagged', ['subject_type' => 'contact', 'tag_id' => $tagId], $write, $this->ctx);
+        self::assertSame(2, $tagged['count']);
+        self::assertSame('Ada', $tagged['records'][0]['first_name']);
+
+        // Detach one, and it drops out.
+        $this->toolset->call('crm_tag_detach', ['subject_type' => 'contact', 'subject_id' => $a, 'tag_id' => $tagId], $write, $this->ctx);
+        self::assertSame(1, $this->toolset->call('crm_tagged', ['subject_type' => 'contact', 'tag_id' => $tagId], $write, $this->ctx)['count']);
+    }
+
+    public function test_tagging_a_missing_subject_comes_back_as_data(): void
+    {
+        $out = $this->toolset->call('crm_tag_attach', ['subject_type' => 'contact', 'subject_id' => 999999, 'tag_name' => 'X'], $this->principal('nimbuscms.crm:write'), $this->ctx);
+        self::assertFalse($out['ok']);
+        self::assertSame('invalid', $out['error']);
+    }
+
+    public function test_a_tag_can_span_types_and_delete_removes_it_everywhere(): void
+    {
+        $write = $this->principal('nimbuscms.crm:read', 'nimbuscms.crm:write');
+        $c = $this->toolset->call('crm_contact_set', ['first_name' => 'Ada'], $write, $this->ctx)['contact']['id'];
+        $d = $this->toolset->call('crm_deal_set', ['title' => 'Engine'], $write, $this->ctx)['deal']['id'];
+        $tagId = $this->toolset->call('crm_tag_create', ['name' => 'Priority'], $write, $this->ctx)['tag']['id'];
+
+        $this->toolset->call('crm_tag_attach', ['subject_type' => 'contact', 'subject_id' => $c, 'tag_id' => $tagId], $write, $this->ctx);
+        $this->toolset->call('crm_tag_attach', ['subject_type' => 'deal', 'subject_id' => $d, 'tag_id' => $tagId], $write, $this->ctx);
+        self::assertSame(2, $this->toolset->call('crm_tags', [], $write, $this->ctx)['tags'][0]['count'], 'the tag is used twice, across types');
+
+        $this->toolset->call('crm_tag_delete', ['id' => $tagId], $write, $this->ctx);
+        self::assertSame([], $this->toolset->call('crm_tags_for', ['subject_type' => 'contact', 'subject_id' => $c], $write, $this->ctx)['tags'], 'deleting a tag removes it everywhere');
     }
 }

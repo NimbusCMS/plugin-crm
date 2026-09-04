@@ -17,14 +17,18 @@ final class OrganizationsAdmin
         'deleted'      => ['ok', 'Organization deleted — its contacts were kept and unlinked.'],
         'activity'     => ['ok', 'Activity logged.'],
         'activitygone' => ['ok', 'Activity deleted.'],
+        'tagged'       => ['ok', 'Tag added.'],
+        'untagged'     => ['ok', 'Tag removed.'],
         'noname'       => ['err', 'An organization needs a name.'],
         'activitybad'  => ['err', 'Could not log that activity — check the details.'],
+        'tagbad'       => ['err', 'Could not add that tag — check the details.'],
         'invalid'      => ['err', 'Check the details and try again.'],
     ];
 
     public function __construct(
         private Organizations $organizations,
         private Activities $activities,
+        private Tags $tags,
     ) {
     }
 
@@ -34,13 +38,19 @@ final class OrganizationsAdmin
      * @param ?string $edit  an organization id to load into the form (from ?edit=)
      * @param ?string $q     a search term (from ?q=)
      * @param string  $nonce the request CSP nonce
+     * @param ?string $tag   a tag id to filter the list by (from ?tag=)
      */
-    public function render(string $csrf = '', ?string $notice = null, ?string $edit = null, ?string $q = null, string $nonce = ''): string
+    public function render(string $csrf = '', ?string $notice = null, ?string $edit = null, ?string $q = null, string $nonce = '', ?string $tag = null): string
     {
         $editId  = ($edit !== null && preg_match('/^\d+$/', trim($edit)) === 1) ? (int) trim($edit) : null;
         $editOrg = $editId !== null ? $this->organizations->get($editId) : null;
         $q       = $q !== null ? trim($q) : '';
+        $tagId   = ($tag !== null && preg_match('/^\d+$/', trim($tag)) === 1) ? (int) trim($tag) : null;
         $orgs    = $this->organizations->all($q === '' ? null : $q);
+        if ($tagId !== null) {
+            $ids  = $this->tags->idsFor(Activities::SUBJECT_ORGANIZATION, $tagId);
+            $orgs = array_values(array_filter($orgs, static fn (array $o): bool => in_array((int) $o['id'], $ids, true)));
+        }
 
         return $this->styles($nonce)
             . '<div class="nb-page-head"><h1>Organizations</h1></div>'
@@ -48,6 +58,8 @@ final class OrganizationsAdmin
             . '<p class="nb-muted cr-intro">The companies your contacts belong to. Deleting one keeps its people — they are simply unlinked.</p>'
             . $this->form($csrf, $editOrg)
             . ($editOrg !== null ? ActivitiesAdmin::render($csrf, 'crm-organizations', Activities::SUBJECT_ORGANIZATION, (int) $editOrg['id'], $this->activities->forSubject(Activities::SUBJECT_ORGANIZATION, (int) $editOrg['id']), $nonce) : '')
+            . ($editOrg !== null ? TagsAdmin::block($csrf, 'crm-organizations', Activities::SUBJECT_ORGANIZATION, (int) $editOrg['id'], $this->tags->tagsFor(Activities::SUBJECT_ORGANIZATION, (int) $editOrg['id']), $this->tags->allTags(), $nonce) : '')
+            . TagsAdmin::filterBar('crm-organizations', $this->tags->allTags(), $tagId)
             . $this->list($csrf, $orgs, $q);
     }
 

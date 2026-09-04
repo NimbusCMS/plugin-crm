@@ -133,6 +133,10 @@ final class Deals
                 'DELETE FROM ' . Schema::ACTIVITY . ' WHERE subject_type = :type AND subject_id = :id',
                 ['type' => Activities::SUBJECT_DEAL, 'id' => $id],
             );
+            $this->storage()->execute(
+                'DELETE FROM ' . Schema::TAGGABLE . ' WHERE taggable_type = :type AND taggable_id = :id',
+                ['type' => Activities::SUBJECT_DEAL, 'id' => $id],
+            );
             return $this->storage()->execute('DELETE FROM ' . Schema::DEAL . ' WHERE id = :id', ['id' => $id]);
         });
     }
