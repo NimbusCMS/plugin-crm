@@ -11,6 +11,7 @@ use NimbusCMS\Crm\Contacts;
 use NimbusCMS\Crm\Deals;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
+use NimbusCMS\Crm\Tags;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -25,6 +26,7 @@ final class OrganizationsTest extends TestCase
     private Contacts $contacts;
     private Activities $activities;
     private Deals $deals;
+    private Tags $tags;
 
     protected function setUp(): void
     {
@@ -35,19 +37,22 @@ final class OrganizationsTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals(), ...Schema::tags()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
         $db->execute('TRUNCATE ' . Schema::DEAL);
+        $db->execute('TRUNCATE ' . Schema::TAG);
+        $db->execute('TRUNCATE ' . Schema::TAGGABLE);
 
         $storage             = new PluginStorage($db);
         $this->organizations = new Organizations(static fn (): PluginStorage => $storage);
         $this->contacts      = new Contacts(static fn (): PluginStorage => $storage);
         $this->activities    = new Activities(static fn (): PluginStorage => $storage);
         $this->deals         = new Deals(static fn (): PluginStorage => $storage);
+        $this->tags          = new Tags(static fn (): PluginStorage => $storage);
     }
 
     private const NOW = '2026-01-01 09:00:00';
@@ -147,6 +152,16 @@ final class OrganizationsTest extends TestCase
         $deal = $this->deals->get($dealId);
         self::assertNotNull($deal, 'the deal outlives the company');
         self::assertNull($deal['org_id'], 'the dangling org link is cleared');
+    }
+
+    public function test_delete_clears_its_tag_links(): void
+    {
+        $orgId = $this->organizations->save(null, ['name' => 'Acme'], self::NOW);
+        $tagId = $this->tags->findOrCreate('Partner', self::NOW);
+        $this->tags->attach('organization', $orgId, $tagId, self::NOW);
+
+        self::assertTrue($this->organizations->delete($orgId));
+        self::assertSame([], $this->tags->idsFor('organization', $tagId), 'no tag residue for the deleted org');
     }
 
     public function test_exists_reports_presence(): void

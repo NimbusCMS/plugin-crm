@@ -11,6 +11,7 @@ use NimbusCMS\Crm\Contacts;
 use NimbusCMS\Crm\ContactsAdmin;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
+use NimbusCMS\Crm\Tags;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -34,12 +35,14 @@ final class ContactsAdminTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals(), ...Schema::tags()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
+        $db->execute('TRUNCATE ' . Schema::TAG);
+        $db->execute('TRUNCATE ' . Schema::TAGGABLE);
 
         $storage          = new PluginStorage($db);
         $this->contacts   = new Contacts(static fn (): PluginStorage => $storage);
@@ -48,6 +51,7 @@ final class ContactsAdminTest extends TestCase
             $this->contacts,
             new Organizations(static fn (): PluginStorage => $storage),
             $this->activities,
+            new Tags(static fn (): PluginStorage => $storage),
         );
     }
 

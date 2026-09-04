@@ -18,9 +18,12 @@ final class ContactsAdmin
         'deleted'     => ['ok', 'Contact deleted.'],
         'activity'    => ['ok', 'Activity logged.'],
         'activitygone' => ['ok', 'Activity deleted.'],
+        'tagged'      => ['ok', 'Tag added.'],
+        'untagged'    => ['ok', 'Tag removed.'],
         'bademail'    => ['err', 'That email address is not valid.'],
         'noname'      => ['err', 'A contact needs a first or last name.'],
         'activitybad' => ['err', 'Could not log that activity — check the details.'],
+        'tagbad'      => ['err', 'Could not add that tag — check the details.'],
         'invalid'     => ['err', 'Check the details and try again.'],
     ];
 
@@ -28,6 +31,7 @@ final class ContactsAdmin
         private Contacts $contacts,
         private Organizations $organizations,
         private Activities $activities,
+        private Tags $tags,
     ) {
     }
 
@@ -37,13 +41,19 @@ final class ContactsAdmin
      * @param ?string $edit   a contact id to load into the form (from ?edit=)
      * @param ?string $q      a search term (from ?q=)
      * @param string  $nonce  the request CSP nonce
+     * @param ?string $tag    a tag id to filter the list by (from ?tag=)
      */
-    public function render(string $csrf = '', ?string $notice = null, ?string $edit = null, ?string $q = null, string $nonce = ''): string
+    public function render(string $csrf = '', ?string $notice = null, ?string $edit = null, ?string $q = null, string $nonce = '', ?string $tag = null): string
     {
         $editId      = ($edit !== null && preg_match('/^\d+$/', trim($edit)) === 1) ? (int) trim($edit) : null;
         $editContact = $editId !== null ? $this->contacts->get($editId) : null;
         $q           = $q !== null ? trim($q) : '';
+        $tagId       = ($tag !== null && preg_match('/^\d+$/', trim($tag)) === 1) ? (int) trim($tag) : null;
         $contacts    = $this->contacts->all($q === '' ? null : $q);
+        if ($tagId !== null) {
+            $ids      = $this->tags->idsFor(Activities::SUBJECT_CONTACT, $tagId);
+            $contacts = array_values(array_filter($contacts, static fn (array $c): bool => in_array((int) $c['id'], $ids, true)));
+        }
 
         $html = $this->styles($nonce)
             . '<div class="nb-page-head"><h1>Contacts</h1></div>'
@@ -53,7 +63,9 @@ final class ContactsAdmin
         $html .= $this->form($csrf, $editContact);
         if ($editContact !== null) {
             $html .= ActivitiesAdmin::render($csrf, 'crm', Activities::SUBJECT_CONTACT, (int) $editContact['id'], $this->activities->forSubject(Activities::SUBJECT_CONTACT, (int) $editContact['id']), $nonce);
+            $html .= TagsAdmin::block($csrf, 'crm', Activities::SUBJECT_CONTACT, (int) $editContact['id'], $this->tags->tagsFor(Activities::SUBJECT_CONTACT, (int) $editContact['id']), $this->tags->allTags(), $nonce);
         }
+        $html .= TagsAdmin::filterBar('crm', $this->tags->allTags(), $tagId);
         $html .= $this->list($csrf, $contacts, $q, $editId);
 
         return $html;

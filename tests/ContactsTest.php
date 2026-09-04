@@ -11,6 +11,7 @@ use NimbusCMS\Crm\Contacts;
 use NimbusCMS\Crm\Deals;
 use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
+use NimbusCMS\Crm\Tags;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -26,6 +27,7 @@ final class ContactsTest extends TestCase
     private Organizations $organizations;
     private Activities $activities;
     private Deals $deals;
+    private Tags $tags;
 
     protected function setUp(): void
     {
@@ -36,19 +38,22 @@ final class ContactsTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals()] as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations(), ...Schema::activities(), ...Schema::deals(), ...Schema::tags()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
         $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
         $db->execute('TRUNCATE ' . Schema::ACTIVITY);
         $db->execute('TRUNCATE ' . Schema::DEAL);
+        $db->execute('TRUNCATE ' . Schema::TAG);
+        $db->execute('TRUNCATE ' . Schema::TAGGABLE);
 
         $storage             = new PluginStorage($db);
         $this->contacts      = new Contacts(static fn (): PluginStorage => $storage);
         $this->organizations = new Organizations(static fn (): PluginStorage => $storage);
         $this->activities    = new Activities(static fn (): PluginStorage => $storage);
         $this->deals         = new Deals(static fn (): PluginStorage => $storage);
+        $this->tags          = new Tags(static fn (): PluginStorage => $storage);
     }
 
     private const NOW = '2026-01-01 09:00:00';
@@ -172,6 +177,18 @@ final class ContactsTest extends TestCase
         $deal = $this->deals->get($dealId);
         self::assertNotNull($deal, 'the deal outlives the contact');
         self::assertNull($deal['contact_id'], 'the dangling contact link is cleared');
+    }
+
+    public function test_deleting_a_contact_clears_its_tag_links(): void
+    {
+        $id    = $this->contacts->save(null, ['first_name' => 'Ada'], self::NOW);
+        $tagId = $this->tags->findOrCreate('VIP', self::NOW);
+        $this->tags->attach('contact', $id, $tagId, self::NOW);
+        self::assertCount(1, $this->tags->tagsFor('contact', $id));
+
+        self::assertSame(1, $this->contacts->delete($id));
+        self::assertSame([], $this->tags->idsFor('contact', $tagId), 'no tag residue for the forgotten contact');
+        self::assertNotNull($this->tags->getTag($tagId), 'the tag itself survives');
     }
 
     public function test_deleting_an_org_unlinks_its_contacts_but_keeps_them(): void

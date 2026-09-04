@@ -31,6 +31,7 @@ final class CrmToolset extends PluginToolset
         private Organizations $organizations,
         private Activities $activities,
         private Deals $deals,
+        private Tags $tags,
     ) {
     }
 
@@ -163,6 +164,61 @@ final class CrmToolset extends PluginToolset
                 'required'   => ['id'],
                 'properties' => ['id' => ['type' => 'integer', 'description' => 'The deal id.']],
             ], $this->dealDelete(...)),
+
+            new PluginTool('tags', 'read', 'List every tag with how many records carry it.', [
+                'type' => 'object', 'properties' => new \stdClass(),
+            ], $this->tags(...)),
+
+            new PluginTool('tag_create', 'write', 'Create a tag by name (or return the existing one with that name).', [
+                'type'       => 'object',
+                'required'   => ['name'],
+                'properties' => ['name' => ['type' => 'string', 'description' => 'The tag name.']],
+            ], $this->tagCreate(...)),
+
+            new PluginTool('tag_delete', 'write', 'Delete a tag by id, removing it from everything it is on (the records are kept).', [
+                'type'       => 'object',
+                'required'   => ['id'],
+                'properties' => ['id' => ['type' => 'integer', 'description' => 'The tag id.']],
+            ], $this->tagDelete(...)),
+
+            new PluginTool('tag_attach', 'write', 'Apply a tag to a contact, organization or deal. Give either tag_id or tag_name (a new name is created).', [
+                'type'       => 'object',
+                'required'   => ['subject_type', 'subject_id'],
+                'properties' => [
+                    'subject_type' => ['type' => 'string', 'enum' => $subjects, 'description' => 'What to tag: "contact", "organization" or "deal".'],
+                    'subject_id'   => ['type' => 'integer', 'description' => 'The existing subject id.'],
+                    'tag_id'       => ['type' => 'integer', 'description' => 'An existing tag id.'],
+                    'tag_name'     => ['type' => 'string', 'description' => 'A tag name (found or created) — an alternative to tag_id.'],
+                ],
+            ], $this->tagAttach(...)),
+
+            new PluginTool('tag_detach', 'write', 'Remove a tag from a contact, organization or deal.', [
+                'type'       => 'object',
+                'required'   => ['subject_type', 'subject_id', 'tag_id'],
+                'properties' => [
+                    'subject_type' => ['type' => 'string', 'enum' => $subjects, 'description' => 'The subject: "contact", "organization" or "deal".'],
+                    'subject_id'   => ['type' => 'integer', 'description' => 'The subject id.'],
+                    'tag_id'       => ['type' => 'integer', 'description' => 'The tag id to remove.'],
+                ],
+            ], $this->tagDetach(...)),
+
+            new PluginTool('tags_for', 'read', 'The tags on one contact, organization or deal.', [
+                'type'       => 'object',
+                'required'   => ['subject_type', 'subject_id'],
+                'properties' => [
+                    'subject_type' => ['type' => 'string', 'enum' => $subjects, 'description' => 'The subject: "contact", "organization" or "deal".'],
+                    'subject_id'   => ['type' => 'integer', 'description' => 'The subject id.'],
+                ],
+            ], $this->tagsFor(...)),
+
+            new PluginTool('tagged', 'read', 'Every record of one type carrying a tag — "all contacts tagged X".', [
+                'type'       => 'object',
+                'required'   => ['subject_type', 'tag_id'],
+                'properties' => [
+                    'subject_type' => ['type' => 'string', 'enum' => $subjects, 'description' => 'Which records: "contact", "organization" or "deal".'],
+                    'tag_id'       => ['type' => 'integer', 'description' => 'The tag id.'],
+                ],
+            ], $this->tagged(...)),
         ];
     }
 
@@ -328,6 +384,112 @@ final class CrmToolset extends PluginToolset
     {
         $id = $this->requireInt($a, 'id');
         return ['ok' => true, 'deleted' => $this->deals->delete($id) > 0];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function tags(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $list = $this->tags->allTags();
+        return ['tags' => $list, 'count' => count($list)];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function tagCreate(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        return $this->guard(function () use ($a): array {
+            $id = $this->tags->findOrCreate((string) ($a['name'] ?? ''), $this->now());
+            return ['ok' => true, 'tag' => $this->tags->getTag($id)];
+        });
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function tagDelete(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $id = $this->requireInt($a, 'id');
+        return ['ok' => true, 'deleted' => $this->tags->deleteTag($id)];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function tagAttach(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        return $this->guard(function () use ($a): array {
+            $type   = (string) ($a['subject_type'] ?? '');
+            $sid    = $this->requireInt($a, 'subject_id');
+            $tagId  = $this->nullableInt($a, 'tag_id');
+            $name   = $this->nullableStr($a, 'tag_name');
+            if ($tagId === null && $name === null) {
+                throw new \InvalidArgumentException('Give a "tag_id" or a "tag_name".');
+            }
+            if ($tagId === null) {
+                $tagId = $this->tags->findOrCreate((string) $name, $this->now());
+            }
+            $made = $this->tags->attach($type, $sid, $tagId, $this->now());
+            return ['ok' => true, 'attached' => $made, 'tag_id' => $tagId];
+        });
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function tagDetach(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $type  = (string) ($a['subject_type'] ?? '');
+        $sid   = $this->requireInt($a, 'subject_id');
+        $tagId = $this->requireInt($a, 'tag_id');
+        return ['ok' => true, 'detached' => $this->tags->detach($type, $sid, $tagId) > 0];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function tagsFor(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $type = (string) ($a['subject_type'] ?? '');
+        $sid  = $this->requireInt($a, 'subject_id');
+        $list = $this->tags->tagsFor($type, $sid);
+        return ['tags' => $list, 'count' => count($list)];
+    }
+
+    /**
+     * Every record of one type carrying a tag — the ids resolved to full records so an
+     * agent gets "all contacts tagged X" in one call.
+     *
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function tagged(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $type  = (string) ($a['subject_type'] ?? '');
+        $tagId = $this->requireInt($a, 'tag_id');
+        $ids   = $this->tags->idsFor($type, $tagId);
+
+        $records = [];
+        foreach ($ids as $id) {
+            $record = match ($type) {
+                Activities::SUBJECT_CONTACT      => $this->contacts->get($id),
+                Activities::SUBJECT_ORGANIZATION => $this->organizations->get($id),
+                Activities::SUBJECT_DEAL         => $this->deals->get($id),
+                default                          => null,
+            };
+            if ($record !== null) {
+                $records[] = $record;
+            }
+        }
+        return ['subject_type' => $type, 'tag_id' => $tagId, 'records' => $records, 'count' => count($records)];
     }
 
     // --- helpers ---------------------------------------------------------

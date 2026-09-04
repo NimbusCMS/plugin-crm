@@ -111,6 +111,10 @@ final class Organizations
                 'DELETE FROM ' . Schema::ACTIVITY . ' WHERE subject_type = :type AND subject_id = :id',
                 ['type' => Activities::SUBJECT_ORGANIZATION, 'id' => $id],
             );
+            $this->storage()->execute(
+                'DELETE FROM ' . Schema::TAGGABLE . ' WHERE taggable_type = :type AND taggable_id = :id',
+                ['type' => Activities::SUBJECT_ORGANIZATION, 'id' => $id],
+            );
             return $this->storage()->execute('DELETE FROM ' . Schema::ORGANIZATION . ' WHERE id = :id', ['id' => $id]) > 0;
         });
     }

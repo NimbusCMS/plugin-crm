@@ -19,7 +19,7 @@ use Nimbus\Plugin\PluginStorage;
  * touching no core data; no public/site surface at all.
  *
  * Slice 1: contacts. Slice 2: organizations + the contact→org link. Slice 3: the
- * activity timeline. Slice 4: the deal pipeline.
+ * activity timeline. Slice 4: the deal pipeline. Slice 5: tags + filtering.
  */
 final class CrmPlugin implements Plugin
 {
@@ -32,6 +32,7 @@ final class CrmPlugin implements Plugin
         $context->migrations()->register('002_organizations', Schema::organizations());
         $context->migrations()->register('003_activities', Schema::activities());
         $context->migrations()->register('004_deals', Schema::deals());
+        $context->migrations()->register('005_tags', Schema::tags());
 
         // Grantable, wildcard-immune: nimbuscms.crm:read / :write. Contact data is
         // PII — a content *:write token can never read or change it.
@@ -43,9 +44,10 @@ final class CrmPlugin implements Plugin
         $organizations = new Organizations($storage);
         $activities    = new Activities($storage);
         $deals         = new Deals($storage);
+        $tags          = new Tags($storage);
 
         // The agent surface — every tool gates on nimbuscms.crm:read|write (ADR 0016).
-        $context->mcp()->register(new CrmToolset($contacts, $organizations, $activities, $deals));
+        $context->mcp()->register(new CrmToolset($contacts, $organizations, $activities, $deals, $tags));
 
         // Admin: search + list + create/edit form. Gated on nimbuscms.crm:write
         // (same as the write tools) so a content-only editor can't reach PII; the
@@ -54,7 +56,7 @@ final class CrmPlugin implements Plugin
             'crm',
             'Contacts',
             '👥',
-            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new ContactsAdmin($contacts, $organizations, $activities))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
+            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new ContactsAdmin($contacts, $organizations, $activities, $tags))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce, $r->query('tag')),
             self::ID . ':write',
         );
 
@@ -96,7 +98,7 @@ final class CrmPlugin implements Plugin
             'crm-organizations',
             'Organizations',
             '🏢',
-            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new OrganizationsAdmin($organizations, $activities))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
+            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new OrganizationsAdmin($organizations, $activities, $tags))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce, $r->query('tag')),
             self::ID . ':write',
         );
 
@@ -132,7 +134,7 @@ final class CrmPlugin implements Plugin
             'crm-deals',
             'Deals',
             '📊',
-            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new DealsAdmin($deals, $contacts, $organizations, $activities))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
+            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new DealsAdmin($deals, $contacts, $organizations, $activities, $tags))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce, $r->query('tag')),
             self::ID . ':write',
         );
 
@@ -208,10 +210,79 @@ final class CrmPlugin implements Plugin
             return Response::redirect($back($r) . 'ok=activitygone');
         };
 
+        // Tags are attached/removed inline on a record; the same two actions serve
+        // every record page and redirect back via the shared $back helper.
+        $attachTag = static function (Request $r) use ($tags, $back): Response {
+            $base = $back($r);
+            $type = (string) ($r->input('subject_type') ?? '');
+            $sid  = trim((string) ($r->input('subject_id') ?? ''));
+            $name = trim((string) ($r->input('tag_name') ?? ''));
+            $tagIn = trim((string) ($r->input('tag_id') ?? ''));
+            if ($sid === '' || !ctype_digit($sid)) {
+                return Response::redirect($base . 'err=tagbad');
+            }
+            try {
+                $now   = date('Y-m-d H:i:s');
+                $tagId = $name !== '' ? $tags->findOrCreate($name, $now) : (($tagIn !== '' && ctype_digit($tagIn)) ? (int) $tagIn : 0);
+                if ($tagId === 0) {
+                    return Response::redirect($base . 'err=tagbad');
+                }
+                $tags->attach($type, (int) $sid, $tagId, $now);
+                return Response::redirect($base . 'ok=tagged');
+            } catch (\Throwable) {
+                return Response::redirect($base . 'err=tagbad');
+            }
+        };
+
+        $detachTag = static function (Request $r) use ($tags, $back): Response {
+            $type  = (string) ($r->input('subject_type') ?? '');
+            $sid   = trim((string) ($r->input('subject_id') ?? ''));
+            $tagIn = trim((string) ($r->input('tag_id') ?? ''));
+            if ($sid !== '' && ctype_digit($sid) && $tagIn !== '' && ctype_digit($tagIn)) {
+                $tags->detach($type, (int) $sid, (int) $tagIn);
+            }
+            return Response::redirect($back($r) . 'ok=untagged');
+        };
+
         foreach (['crm', 'crm-organizations', 'crm-deals'] as $page) {
             $context->adminPages()->action($page, 'activity-add', $addActivity);
             $context->adminPages()->action($page, 'activity-delete', $deleteActivity);
+            $context->adminPages()->action($page, 'tag-attach', $attachTag);
+            $context->adminPages()->action($page, 'tag-detach', $detachTag);
         }
+
+        // Tags management: the shared vocabulary of labels. Same crm:write gate.
+        $context->adminPages()->register(
+            'crm-tags',
+            'Tags',
+            '🏷️',
+            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new TagsAdmin($tags))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $nonce),
+            self::ID . ':write',
+        );
+
+        $context->adminPages()->action('crm-tags', 'tag-save', static function (Request $r) use ($tags): Response {
+            $name = (string) ($r->input('name') ?? '');
+            $idIn = trim((string) ($r->input('id') ?? ''));
+            $id   = ($idIn !== '' && ctype_digit($idIn)) ? (int) $idIn : null;
+            try {
+                $tags->saveTag($id, $name, date('Y-m-d H:i:s'));
+                return Response::redirect('/admin/crm-tags?ok=saved');
+            } catch (\InvalidArgumentException $e) {
+                $msg  = $e->getMessage();
+                $code = str_contains($msg, 'already exists') ? 'dupe' : (str_contains($msg, 'name') ? 'noname' : 'invalid');
+                return Response::redirect('/admin/crm-tags?err=' . $code);
+            } catch (\Throwable) {
+                return Response::redirect('/admin/crm-tags?err=invalid');
+            }
+        });
+
+        $context->adminPages()->action('crm-tags', 'tag-delete', static function (Request $r) use ($tags): Response {
+            $idIn = trim((string) ($r->input('id') ?? ''));
+            if ($idIn !== '' && ctype_digit($idIn)) {
+                $tags->deleteTag((int) $idIn);
+            }
+            return Response::redirect('/admin/crm-tags?ok=deleted');
+        });
 
         // Teach an MCP agent how to drive the CRM (ADR 0013).
         $context->skills()->register('CRM', Guide::text());
