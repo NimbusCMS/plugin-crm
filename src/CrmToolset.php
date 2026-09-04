@@ -25,7 +25,7 @@ use Nimbus\Mcp\PluginToolset;
  */
 final class CrmToolset extends PluginToolset
 {
-    public function __construct(private Contacts $contacts)
+    public function __construct(private Contacts $contacts, private Organizations $organizations)
     {
     }
 
@@ -36,7 +36,8 @@ final class CrmToolset extends PluginToolset
 
     protected function tools(): array
     {
-        $id = ['type' => 'integer', 'description' => 'The contact id.'];
+        $id    = ['type' => 'integer', 'description' => 'The contact id.'];
+        $orgId = ['type' => 'integer', 'description' => 'The organization id.'];
 
         return [
             new PluginTool('contacts', 'read', 'List contacts (all, or those whose name or email matches a search).', [
@@ -59,6 +60,7 @@ final class CrmToolset extends PluginToolset
                     'email'      => ['type' => 'string', 'description' => 'Email address (validated). Optional.'],
                     'phone'      => ['type' => 'string', 'description' => 'Phone number. Optional.'],
                     'notes'      => ['type' => 'string', 'description' => 'Free-text notes (plain text). Optional.'],
+                    'org_id'     => ['type' => 'integer', 'description' => 'An existing organization id to link the contact to. Optional; blank to unlink.'],
                 ],
             ], $this->contactSet(...)),
 
@@ -67,6 +69,33 @@ final class CrmToolset extends PluginToolset
                 'required'   => ['id'],
                 'properties' => ['id' => $id],
             ], $this->contactDelete(...)),
+
+            new PluginTool('organizations', 'read', 'List organizations (all, or those whose name matches a search).', [
+                'type'       => 'object',
+                'properties' => ['q' => ['type' => 'string', 'description' => 'Optional search over the organization name.']],
+            ], $this->organizations(...)),
+
+            new PluginTool('organization_get', 'read', 'One organization by id, or none.', [
+                'type'       => 'object',
+                'required'   => ['id'],
+                'properties' => ['id' => $orgId],
+            ], $this->organizationGet(...)),
+
+            new PluginTool('organization_set', 'write', 'Create an organization (omit id) or update one (with id). Only the fields you send change.', [
+                'type'       => 'object',
+                'properties' => [
+                    'id'      => ['type' => 'integer', 'description' => 'Existing organization id to update; omit to create.'],
+                    'name'    => ['type' => 'string', 'description' => 'Organization name (required to create).'],
+                    'website' => ['type' => 'string', 'description' => 'Website URL. Optional.'],
+                    'notes'   => ['type' => 'string', 'description' => 'Free-text notes (plain text). Optional.'],
+                ],
+            ], $this->organizationSet(...)),
+
+            new PluginTool('organization_delete', 'write', 'Delete an organization by id; its contacts are kept but unlinked (org_id cleared).', [
+                'type'       => 'object',
+                'required'   => ['id'],
+                'properties' => ['id' => $orgId],
+            ], $this->organizationDelete(...)),
         ];
     }
 
@@ -113,6 +142,48 @@ final class CrmToolset extends PluginToolset
         $id = $this->requireInt($a, 'id');
         $removed = $this->contacts->delete($id);
         return ['ok' => true, 'deleted' => $removed > 0];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function organizations(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $list = $this->organizations->all($this->nullableStr($a, 'q'));
+        return ['organizations' => $list, 'count' => count($list)];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function organizationGet(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $id = $this->requireInt($a, 'id');
+        return ['id' => $id, 'organization' => $this->organizations->get($id)];
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function organizationSet(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        return $this->guard(function () use ($a): array {
+            $id = $this->organizations->save($this->nullableInt($a, 'id'), $a, $this->now());
+            return ['ok' => true, 'organization' => $this->organizations->get($id)];
+        });
+    }
+
+    /**
+     * @param array<string,mixed> $a
+     * @return array<string,mixed>
+     */
+    private function organizationDelete(array $a, TokenPrincipal $p, EntryOpContext $c): array
+    {
+        $id = $this->requireInt($a, 'id');
+        return ['ok' => true, 'deleted' => $this->organizations->delete($id)];
     }
 
     // --- helpers ---------------------------------------------------------

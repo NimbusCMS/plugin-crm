@@ -12,6 +12,7 @@ use Nimbus\Mcp\McpError;
 use Nimbus\Plugin\PluginStorage;
 use NimbusCMS\Crm\Contacts;
 use NimbusCMS\Crm\CrmToolset;
+use NimbusCMS\Crm\Organizations;
 use NimbusCMS\Crm\Schema;
 use PHPUnit\Framework\TestCase;
 
@@ -36,13 +37,17 @@ final class CrmToolsetTest extends TestCase
             'user' => getenv('TEST_DB_USER') ?: 'root',
             'pass' => ($p = getenv('TEST_DB_PASS')) !== false ? $p : 'root',
         ]);
-        foreach (Schema::contacts() as $sql) {
+        foreach ([...Schema::contacts(), ...Schema::organizations()] as $sql) {
             $db->execute($sql);
         }
         $db->execute('TRUNCATE ' . Schema::CONTACT);
+        $db->execute('TRUNCATE ' . Schema::ORGANIZATION);
 
         $storage       = new PluginStorage($db);
-        $this->toolset = new CrmToolset(new Contacts(static fn (): PluginStorage => $storage));
+        $this->toolset = new CrmToolset(
+            new Contacts(static fn (): PluginStorage => $storage),
+            new Organizations(static fn (): PluginStorage => $storage),
+        );
         $this->toolset->bindTo('nimbuscms.crm'); // the registrar does this in prod
         $this->ctx = new EntryOpContext('127.0.0.1', '/api/v1/mcp');
 
@@ -64,13 +69,16 @@ final class CrmToolsetTest extends TestCase
     public function test_the_tools_are_namespaced_and_split_read_from_write(): void
     {
         $names = array_column($this->toolset->definitions($this->principal('nimbuscms.crm:read', 'nimbuscms.crm:write')), 'name');
-        self::assertSame(['crm_contacts', 'crm_contact_get', 'crm_contact_set', 'crm_contact_delete'], $names);
+        self::assertSame([
+            'crm_contacts', 'crm_contact_get', 'crm_contact_set', 'crm_contact_delete',
+            'crm_organizations', 'crm_organization_get', 'crm_organization_set', 'crm_organization_delete',
+        ], $names);
     }
 
     public function test_a_read_only_token_sees_only_the_read_tools(): void
     {
         $names = array_column($this->toolset->definitions($this->principal('nimbuscms.crm:read')), 'name');
-        self::assertSame(['crm_contacts', 'crm_contact_get'], $names);
+        self::assertSame(['crm_contacts', 'crm_contact_get', 'crm_organizations', 'crm_organization_get'], $names);
     }
 
     public function test_a_content_token_cannot_reach_contacts(): void
@@ -115,6 +123,47 @@ final class CrmToolsetTest extends TestCase
     public function test_an_invalid_email_comes_back_as_data_not_an_exception(): void
     {
         $out = $this->toolset->call('crm_contact_set', ['first_name' => 'Bad', 'email' => 'nope'], $this->principal('nimbuscms.crm:write'), $this->ctx);
+        self::assertFalse($out['ok']);
+        self::assertSame('invalid', $out['error']);
+    }
+
+    public function test_a_content_token_cannot_reach_organizations_either(): void
+    {
+        $this->expectException(McpError::class);
+        $this->expectExceptionMessage('Unknown tool "crm_organizations"');
+        $this->toolset->call('crm_organizations', [], $this->principal('*:read', '*:write'), $this->ctx);
+    }
+
+    public function test_a_read_token_cannot_call_an_org_write_tool(): void
+    {
+        $this->expectException(McpError::class);
+        $this->toolset->call('crm_organization_set', ['name' => 'X'], $this->principal('nimbuscms.crm:read'), $this->ctx);
+    }
+
+    public function test_organization_set_get_and_delete_round_trip(): void
+    {
+        $write = $this->principal('nimbuscms.crm:read', 'nimbuscms.crm:write');
+
+        $out = $this->toolset->call('crm_organization_set', ['name' => 'Acme', 'website' => 'https://acme.test'], $write, $this->ctx);
+        self::assertTrue($out['ok']);
+        $orgId = $out['organization']['id'];
+
+        // Link a contact to it, then delete the org — the contact must survive, unlinked.
+        $c = $this->toolset->call('crm_contact_set', ['first_name' => 'Ada', 'org_id' => $orgId], $write, $this->ctx);
+        self::assertSame($orgId, $c['contact']['org_id']);
+        self::assertSame('Acme', $c['contact']['organization']);
+
+        $del = $this->toolset->call('crm_organization_delete', ['id' => $orgId], $write, $this->ctx);
+        self::assertTrue($del['deleted']);
+
+        $still = $this->toolset->call('crm_contact_get', ['id' => $c['contact']['id']], $write, $this->ctx);
+        self::assertNotNull($still['contact'], 'the contact outlives its deleted org');
+        self::assertNull($still['contact']['org_id'], 'the link is cleared, not cascaded');
+    }
+
+    public function test_creating_an_org_without_a_name_comes_back_as_data(): void
+    {
+        $out = $this->toolset->call('crm_organization_set', [], $this->principal('nimbuscms.crm:write'), $this->ctx);
         self::assertFalse($out['ok']);
         self::assertSame('invalid', $out['error']);
     }

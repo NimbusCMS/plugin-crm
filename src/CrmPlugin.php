@@ -18,7 +18,7 @@ use Nimbus\Plugin\PluginStorage;
  * token can never reach contact data. All on its **own tables** (ADR 0005),
  * touching no core data; no public/site surface at all.
  *
- * Slice 1: contacts (CRUD over the admin + MCP).
+ * Slice 1: contacts. Slice 2: organizations + the contact→org link.
  */
 final class CrmPlugin implements Plugin
 {
@@ -28,17 +28,19 @@ final class CrmPlugin implements Plugin
     public function register(PluginContext $context): void
     {
         $context->migrations()->register('001_contacts', Schema::contacts());
+        $context->migrations()->register('002_organizations', Schema::organizations());
 
         // Grantable, wildcard-immune: nimbuscms.crm:read / :write. Contact data is
         // PII — a content *:write token can never read or change it.
         $context->capabilities()->declare('CRM', ['read', 'write']);
 
         // Storage is taken lazily, so register() runs no query and loads without a database.
-        $storage  = static fn (): PluginStorage => $context->storage();
-        $contacts = new Contacts($storage);
+        $storage       = static fn (): PluginStorage => $context->storage();
+        $contacts      = new Contacts($storage);
+        $organizations = new Organizations($storage);
 
         // The agent surface — every tool gates on nimbuscms.crm:read|write (ADR 0016).
-        $context->mcp()->register(new CrmToolset($contacts));
+        $context->mcp()->register(new CrmToolset($contacts, $organizations));
 
         // Admin: search + list + create/edit form. Gated on nimbuscms.crm:write
         // (same as the write tools) so a content-only editor can't reach PII; the
@@ -47,7 +49,7 @@ final class CrmPlugin implements Plugin
             'crm',
             'Contacts',
             '👥',
-            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new ContactsAdmin($contacts))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
+            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new ContactsAdmin($contacts, $organizations))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
             self::ID . ':write',
         );
 
@@ -60,6 +62,7 @@ final class CrmPlugin implements Plugin
                 'email'      => (string) ($r->input('email') ?? ''),
                 'phone'      => (string) ($r->input('phone') ?? ''),
                 'notes'      => (string) ($r->input('notes') ?? ''),
+                'org_id'     => (string) ($r->input('org_id') ?? ''),
             ];
             $idIn = trim((string) ($r->input('id') ?? ''));
             $id   = ($idIn !== '' && ctype_digit($idIn)) ? (int) $idIn : null;
@@ -81,6 +84,42 @@ final class CrmPlugin implements Plugin
                 $contacts->delete((int) $idIn);
             }
             return Response::redirect('/admin/crm?ok=deleted');
+        });
+
+        // Organizations: the companies contacts belong to. Same crm:write gate.
+        $context->adminPages()->register(
+            'crm-organizations',
+            'Organizations',
+            '🏢',
+            static fn (Request $r, string $nonce = '', string $csrf = ''): string => (new OrganizationsAdmin($organizations))->render($csrf, $r->query('ok') ?? $r->query('err'), $r->query('edit'), $r->query('q'), $nonce),
+            self::ID . ':write',
+        );
+
+        $context->adminPages()->action('crm-organizations', 'org-save', static function (Request $r) use ($organizations): Response {
+            $fields = [
+                'name'    => (string) ($r->input('name') ?? ''),
+                'website' => (string) ($r->input('website') ?? ''),
+                'notes'   => (string) ($r->input('notes') ?? ''),
+            ];
+            $idIn = trim((string) ($r->input('id') ?? ''));
+            $id   = ($idIn !== '' && ctype_digit($idIn)) ? (int) $idIn : null;
+            try {
+                $organizations->save($id, $fields, date('Y-m-d H:i:s'));
+                return Response::redirect('/admin/crm-organizations?ok=saved');
+            } catch (\InvalidArgumentException $e) {
+                $code = str_contains($e->getMessage(), 'name') ? 'noname' : 'invalid';
+                return Response::redirect('/admin/crm-organizations?err=' . $code);
+            } catch (\Throwable) {
+                return Response::redirect('/admin/crm-organizations?err=invalid');
+            }
+        });
+
+        $context->adminPages()->action('crm-organizations', 'org-delete', static function (Request $r) use ($organizations): Response {
+            $idIn = trim((string) ($r->input('id') ?? ''));
+            if ($idIn !== '' && ctype_digit($idIn)) {
+                $organizations->delete((int) $idIn);
+            }
+            return Response::redirect('/admin/crm-organizations?ok=deleted');
         });
 
         // Teach an MCP agent how to drive the CRM (ADR 0013).

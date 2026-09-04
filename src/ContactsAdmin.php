@@ -21,7 +21,7 @@ final class ContactsAdmin
         'invalid'  => ['err', 'Check the details and try again.'],
     ];
 
-    public function __construct(private Contacts $contacts)
+    public function __construct(private Contacts $contacts, private Organizations $organizations)
     {
     }
 
@@ -55,6 +55,7 @@ final class ContactsAdmin
     {
         $val = static fn (string $k): string => $edit !== null && $edit[$k] !== null ? self::e((string) $edit[$k]) : '';
         $idField = $edit !== null ? '<input type="hidden" name="id" value="' . self::e((string) $edit['id']) . '">' : '';
+        $currentOrg = $edit !== null && $edit['org_id'] !== null ? (int) $edit['org_id'] : null;
 
         return '<h2>' . ($edit !== null ? 'Edit contact' : 'Add a contact') . '</h2>'
             . '<form method="post" action="/admin/crm/contact-save" class="cr-form">'
@@ -67,10 +68,21 @@ final class ContactsAdmin
             . '<label>Email<input type="email" name="email" value="' . $val('email') . '" maxlength="191"></label>'
             . '<label>Phone<input type="text" name="phone" value="' . $val('phone') . '" maxlength="60"></label>'
             . '</div>'
+            . '<label>Organization' . $this->orgSelect($currentOrg) . '</label>'
             . '<label>Notes<textarea name="notes" rows="3" maxlength="10000">' . $val('notes') . '</textarea></label>'
             . '<div class="cr-actions"><button type="submit" class="nb-btn">' . ($edit !== null ? 'Save contact' : 'Add contact') . '</button>'
             . ($edit !== null ? ' <a class="nb-btn nb-btn-quiet" href="/admin/crm">Cancel</a>' : '')
             . '</div></form>';
+    }
+
+    private function orgSelect(?int $current): string
+    {
+        $options = '<option value="">— none —</option>';
+        foreach ($this->organizations->all() as $o) {
+            $sel = $current === (int) $o['id'] ? ' selected' : '';
+            $options .= '<option value="' . self::e((string) $o['id']) . '"' . $sel . '>' . self::e((string) $o['name']) . '</option>';
+        }
+        return '<select name="org_id">' . $options . '</select>';
     }
 
     /**
@@ -94,6 +106,7 @@ final class ContactsAdmin
             $name = trim(((string) $c['first_name']) . ' ' . ((string) $c['last_name']));
             $rows .= '<tr>'
                 . '<td data-label="Name"><a href="/admin/crm?edit=' . self::e((string) $c['id']) . '">' . self::e($name === '' ? '(no name)' : $name) . '</a></td>'
+                . '<td data-label="Organization">' . self::e((string) ($c['organization'] ?? '')) . '</td>'
                 . '<td data-label="Email">' . self::e((string) ($c['email'] ?? '')) . '</td>'
                 . '<td data-label="Phone">' . self::e((string) ($c['phone'] ?? '')) . '</td>'
                 . '<td data-label="" class="cr-rowact">'
@@ -106,7 +119,7 @@ final class ContactsAdmin
         }
 
         return $html
-            . '<table class="cr-table"><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th></th></tr></thead><tbody>'
+            . '<table class="cr-table"><thead><tr><th>Name</th><th>Organization</th><th>Email</th><th>Phone</th><th></th></tr></thead><tbody>'
             . $rows . '</tbody></table>';
     }
 
@@ -126,7 +139,7 @@ final class ContactsAdmin
             . '.cr-form{max-width:44rem;display:flex;flex-direction:column;gap:.75rem;margin:0 0 2rem}'
             . '.cr-row{display:flex;gap:.75rem;flex-wrap:wrap}'
             . '.cr-form label{display:flex;flex-direction:column;gap:.25rem;flex:1 1 14rem;font-weight:600;font-size:.85rem}'
-            . '.cr-form input,.cr-form textarea{font:inherit;padding:.5rem .6rem;min-height:44px;box-sizing:border-box}'
+            . '.cr-form input,.cr-form textarea,.cr-form select{font:inherit;padding:.5rem .6rem;min-height:44px;box-sizing:border-box}'
             . '.cr-form textarea{min-height:5rem}'
             . '.cr-search{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:0 0 1rem}'
             . '.cr-search input{font:inherit;padding:.5rem .6rem;min-height:44px;flex:1 1 16rem}'
